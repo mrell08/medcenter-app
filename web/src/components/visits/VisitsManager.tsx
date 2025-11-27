@@ -1095,11 +1095,11 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
 
     const openScheduleModal = useCallback((schedule?: ScheduleResponse | null) => {
         const targetSchedule = schedule ?? null
-        const {h: minH, m: minM} = parseHHMM(MIN_TIME)
-        const {h: maxH, m: maxM} = parseHHMM(MAX_TIME)
+        const defaultStart = parseHHMM('07:00')
+        const defaultEnd = parseHHMM('22:00')
         const baseDay = (day ?? (schedule ? dayjs(schedule.date) : dayjs())).startOf('day')
-        const startParsed = schedule ? parseHHMMSS(schedule.start_time) : {h: minH, m: minM, s: 0}
-        const endParsed = schedule ? parseHHMMSS(schedule.end_time) : {h: maxH, m: maxM, s: 0}
+        const startParsed = schedule ? parseHHMMSS(schedule.start_time) : {h: defaultStart.h, m: defaultStart.m, s: 0}
+        const endParsed = schedule ? parseHHMMSS(schedule.end_time) : {h: defaultEnd.h, m: defaultEnd.m, s: 0}
         const durationMinutes = schedule ? parseDurationMinutes(schedule.duration) : 10
         const normalizedDuration =
             DURATIONS.includes(durationMinutes as DurationMin) ? (durationMinutes as DurationMin) : 10
@@ -1112,7 +1112,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         })
         setEditingSchedule(targetSchedule)
         setScheduleModalOpen(true)
-    }, [MAX_TIME, MIN_TIME, day, parseDurationMinutes, parseHHMM, parseHHMMSS, scheduleForm])
+    }, [day, parseDurationMinutes, parseHHMM, parseHHMMSS, scheduleForm])
 
     const submitSchedule = useCallback(async () => {
         if (!effDoctorId || !day) {
@@ -1272,12 +1272,6 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                         <Typography.Text type="secondary">
                             Разлиновка: {scheduleData.start_time.slice(0, 5)}–{scheduleData.end_time.slice(0, 5)} · шаг {parseDurationMinutes(scheduleData.duration)} мин
                         </Typography.Text>
-                        <Switch
-                            checked={ignoreSchedule}
-                            onChange={(checked: boolean) => setIgnoreSchedule(checked)}
-                            size="small"
-                        />
-                        <Typography.Text type="secondary">Отобразить без разлиновки</Typography.Text>
                         <Button size="small" onClick={() => openScheduleModal(scheduleData)}>
                             Изменить разлиновку
                         </Button>
@@ -1291,6 +1285,12 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                                 Удалить разлиновку
                             </Button>
                         </Popconfirm>
+                        <Switch
+                            checked={ignoreSchedule}
+                            onChange={(checked: boolean) => setIgnoreSchedule(checked)}
+                            size="small"
+                        />
+                        <Typography.Text type="secondary">Отобразить без разлиновки</Typography.Text>
                     </Space>
                 )}
                 {isDoctorDayMode && scheduleData === null && !isScheduleLoading && (
