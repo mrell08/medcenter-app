@@ -21,7 +21,15 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import dayjs, {Dayjs} from 'dayjs'
 import {api} from '../../lib/api'
 import type {VisitCreateRequest, VisitResponse, VisitStatusEnum, VisitUpdateRequest} from '../../api'
-import {createSchedule, fetchSchedule, type ScheduleCreateRequest, type ScheduleResponse} from '../../api/schedules'
+import {
+    createSchedule,
+    deleteSchedule,
+    fetchSchedule,
+    type ScheduleCreateRequest,
+    type ScheduleResponse,
+    type ScheduleUpdateRequest,
+    updateSchedule,
+} from '../../api/schedules'
 import {fetchVisits, type VisitPageResponse, type VisitQueryParams} from '../../api/visits'
 import {getErrorMessage} from '../../lib/errors'
 import EntitySelect from '../EntitySelect'
@@ -83,7 +91,7 @@ type VisitFormValues = {
 type ScheduleFormValues = {
     start_time?: Dayjs
     end_time?: Dayjs
-    duration?: number
+    duration?: DurationMin
 }
 
 type ShowColumns = Partial<{
@@ -641,6 +649,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const [form] = Form.useForm<VisitFormValues>()
     const [scheduleForm] = Form.useForm<ScheduleFormValues>()
     const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
+    const [editingSchedule, setEditingSchedule] = useState<ScheduleResponse | null>(null)
 
     const createMut = useMutation({
         mutationFn: (b: VisitCreateRequest) => createVisit(b),
@@ -694,6 +703,28 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             message.success('Разлиновка сохранена')
             qc.invalidateQueries({queryKey: ['schedule']})
             setScheduleModalOpen(false)
+            setEditingSchedule(null)
+        },
+        onError: (err: unknown) => message.error(getErrorMessage(err)),
+    })
+
+    const updateScheduleMut = useMutation({
+        mutationFn: ({id, body}: { id: string; body: ScheduleUpdateRequest }) => updateSchedule(id, body),
+        onSuccess: () => {
+            message.success('Разлиновка обновлена')
+            qc.invalidateQueries({queryKey: ['schedule']})
+            setScheduleModalOpen(false)
+            setEditingSchedule(null)
+        },
+        onError: (err: unknown) => message.error(getErrorMessage(err)),
+    })
+
+    const deleteScheduleMut = useMutation({
+        mutationFn: (id: string) => deleteSchedule(id),
+        onSuccess: () => {
+            message.success('Разлиновка удалена')
+            qc.invalidateQueries({queryKey: ['schedule']})
+            setEditingSchedule(null)
         },
         onError: (err: unknown) => message.error(getErrorMessage(err)),
     })
@@ -1062,19 +1093,26 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         })
     }, [context?.clientId, context?.doctorId, effDoctorId, form])
 
-    const openScheduleModal = useCallback(() => {
+    const openScheduleModal = useCallback((schedule?: ScheduleResponse | null) => {
+        const targetSchedule = schedule ?? null
         const {h: minH, m: minM} = parseHHMM(MIN_TIME)
         const {h: maxH, m: maxM} = parseHHMM(MAX_TIME)
-        const baseDay = (day ?? dayjs()).startOf('day')
+        const baseDay = (day ?? (schedule ? dayjs(schedule.date) : dayjs())).startOf('day')
+        const startParsed = schedule ? parseHHMMSS(schedule.start_time) : {h: minH, m: minM, s: 0}
+        const endParsed = schedule ? parseHHMMSS(schedule.end_time) : {h: maxH, m: maxM, s: 0}
+        const durationMinutes = schedule ? parseDurationMinutes(schedule.duration) : 10
+        const normalizedDuration =
+            DURATIONS.includes(durationMinutes as DurationMin) ? (durationMinutes as DurationMin) : 10
 
         scheduleForm.resetFields()
         scheduleForm.setFieldsValue({
-            start_time: baseDay.clone().hour(minH).minute(minM),
-            end_time: baseDay.clone().hour(maxH).minute(maxM),
-            duration: 10,
+            start_time: baseDay.clone().hour(startParsed.h).minute(startParsed.m).second(startParsed.s),
+            end_time: baseDay.clone().hour(endParsed.h).minute(endParsed.m).second(endParsed.s),
+            duration: normalizedDuration,
         })
+        setEditingSchedule(targetSchedule)
         setScheduleModalOpen(true)
-    }, [MIN_TIME, MAX_TIME, day, parseHHMM, scheduleForm])
+    }, [MAX_TIME, MIN_TIME, day, parseDurationMinutes, parseHHMM, parseHHMMSS, scheduleForm])
 
     const submitSchedule = useCallback(async () => {
         if (!effDoctorId || !day) {
@@ -1085,7 +1123,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         const v = await scheduleForm.validateFields()
         if (!v.start_time || !v.end_time || !v.duration) return
 
-        const body: ScheduleCreateRequest = {
+        const baseBody = {
             doctor_id: effDoctorId,
             date: day.format('YYYY-MM-DD'),
             start_time: v.start_time.format('HH:mm:ss'),
@@ -1093,8 +1131,13 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             duration: toDurationString(v.duration),
         }
 
-        createScheduleMut.mutate(body)
-    }, [createScheduleMut, day, effDoctorId, scheduleForm, toDurationString])
+        if (editingSchedule) {
+            const body: ScheduleUpdateRequest = {...baseBody}
+            updateScheduleMut.mutate({id: editingSchedule.id, body})
+        } else {
+            createScheduleMut.mutate(baseBody as ScheduleCreateRequest)
+        }
+    }, [createScheduleMut, day, editingSchedule, effDoctorId, scheduleForm, toDurationString, updateScheduleMut])
 
     function resetFilters() {
         setClientId(context?.clientId)
@@ -1234,7 +1277,20 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             onChange={(checked: boolean) => setIgnoreSchedule(checked)}
                             size="small"
                         />
-                        <Typography.Text type="secondary">Отображать без разлиновки</Typography.Text>
+                        <Typography.Text type="secondary">Отобразить без разлиновки</Typography.Text>
+                        <Button size="small" onClick={() => openScheduleModal(scheduleData)}>
+                            Изменить разлиновку
+                        </Button>
+                        <Popconfirm
+                            title="Удалить разлиновку?"
+                            okText="Удалить"
+                            cancelText="Отмена"
+                            onConfirm={() => deleteScheduleMut.mutate(scheduleData.id)}
+                        >
+                            <Button danger size="small" loading={deleteScheduleMut.isPending}>
+                                Удалить разлиновку
+                            </Button>
+                        </Popconfirm>
                     </Space>
                 )}
                 {isDoctorDayMode && scheduleData === null && !isScheduleLoading && (
@@ -1277,11 +1333,14 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             <Modal
                 title="Разлиновка"
                 open={scheduleModalOpen}
-                onCancel={() => setScheduleModalOpen(false)}
+                onCancel={() => {
+                    setScheduleModalOpen(false)
+                    setEditingSchedule(null)
+                }}
                 onOk={submitSchedule}
                 okText="Сохранить"
                 cancelText="Отмена"
-                confirmLoading={createScheduleMut.isPending}
+                confirmLoading={createScheduleMut.isPending || updateScheduleMut.isPending}
             >
                 <Form form={scheduleForm} layout="vertical">
                     <Form.Item
@@ -1321,7 +1380,11 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                         label="Длительность приёма (минуты)"
                         rules={[{required: true, message: 'Укажите длительность'}]}
                     >
-                        <InputNumber min={1} max={240} style={{width: '100%'}}/>
+                        <Select
+                            options={DURATIONS.map((m) => ({value: m, label: `${m} мин`}))}
+                            style={{width: '100%'}}
+                            placeholder="Длительность"
+                        />
                     </Form.Item>
                 </Form>
             </Modal>
