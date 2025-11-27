@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app.db.connection import get_session
-from app.schemas.schedule import ScheduleResponse, ScheduleCreateRequest
-from app.utils.schedule import dal_get_schedule, dal_create_schedule
+from app.schemas.schedule import ScheduleResponse, ScheduleCreateRequest, ScheduleUpdateRequest
+from app.utils.schedule import dal_get_schedule, dal_create_schedule, dal_update_schedule, dal_delete_schedule
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/schedules", tags=["schedule"])
@@ -58,3 +58,35 @@ async def create_schedule(
     except Exception as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.patch(
+    "/{schedule_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ScheduleResponse,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "Schedule not found"},
+    }
+)
+async def update_schedule(
+        _: Request,
+        schedule_id: uuid.UUID,
+        schedule: ScheduleUpdateRequest = Body(...),
+        session: AsyncSession = Depends(get_session),
+):
+    new_schedule = await dal_update_schedule(session, schedule_id, schedule)
+    if not new_schedule:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return ScheduleResponse.model_validate(new_schedule)
+
+
+@router.delete(
+    "/{schedule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_schedule(
+        _: Request,
+        schedule_id: uuid.UUID,
+        session: AsyncSession = Depends(get_session),
+):
+    await dal_delete_schedule(session, schedule_id)
