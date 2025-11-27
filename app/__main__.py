@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_pagination import add_pagination
@@ -6,6 +8,13 @@ from uvicorn import run
 from app.config import DefaultSettings, get_settings
 from app.routes import list_of_routes as api_routes
 from app.utils.common import get_hostname
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def bind_routes(application: FastAPI, setting: DefaultSettings) -> None:

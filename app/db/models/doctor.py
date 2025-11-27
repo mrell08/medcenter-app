@@ -9,4 +9,5 @@ class Doctor(Human):
 
     speciality: Mapped[str] = mapped_column(TEXT)
 
-    visits: Mapped[list["Visit"]] = relationship(back_populates="doctor") # noqa
+    visits: Mapped[list["Visit"]] = relationship(back_populates="doctor")  # noqa
+    schedules: Mapped[list["Schedule"]] = relationship(back_populates="doctor", lazy="selectin")  # noqa
