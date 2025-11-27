@@ -385,7 +385,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 const visit = sortedVisits[visitIdx]
                 const {start, end} = getVisitRange(visit)
 
-                if (end.isSameOrBefore(cursor)) {
+                if (end.isBefore(cursor) || end.isSame(cursor)) {
                     visitIdx += 1
                     continue
                 }

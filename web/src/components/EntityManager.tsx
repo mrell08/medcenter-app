@@ -5,15 +5,15 @@ import { Button, Form, Input, Modal, Space, Table, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { FormInstance } from 'antd'
-import { getErrorMessage } from '../lib/errors'
-import {Pencil} from "lucide-react";
-
-type WithId = { id: string }
 
 // антовский setFieldsValue ждёт recursive partial
 export type RecursivePartial<T> = {
     [K in keyof T]?: T[K] extends object ? RecursivePartial<T[K]> : T[K]
 }
+import { getErrorMessage } from '../lib/errors'
+import {Pencil} from "lucide-react";
+
+type WithId = { id: string }
 
 type EntityManagerProps<
     TItem extends WithId,
@@ -95,7 +95,7 @@ export default function EntityManager<
                 <Button onClick={() => {
                     setEditing(row); setOpen(true)
                     // setFieldsValue ожидает RecursivePartial<TFormValues>
-                    form.setFieldsValue(toForm(row) as Partial<TFormValues>)
+                    form.setFieldsValue(toForm(row) as Parameters<typeof form.setFieldsValue>[0])
                 }}>
                     <Pencil size={16} className="text-blue-600" />
                 </Button>
@@ -127,7 +127,7 @@ export default function EntityManager<
                         setEditing(null)
                         setOpen(true)
                         form.resetFields()
-                        if (initialValues) form.setFieldsValue(initialValues as Partial<TFormValues>)
+                        if (initialValues) form.setFieldsValue(initialValues as Parameters<typeof form.setFieldsValue>[0])
                     }}
                 >
                     {createButtonText}
