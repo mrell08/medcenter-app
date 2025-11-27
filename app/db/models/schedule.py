@@ -1,7 +1,8 @@
 import uuid
 from datetime import date, time, timedelta
 
-from sqlalchemy import UUID, ForeignKey, Date, Time
+from sqlalchemy import UUID, ForeignKey, Date, Time, UniqueConstraint
+from sqlalchemy.dialects.postgresql import INTERVAL
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.testing.schema import mapped_column
 
@@ -19,10 +20,14 @@ class Schedule(Base):
     )
     date: Mapped[date] = mapped_column(Date)
 
-    duration: Mapped[timedelta] = mapped_column(Time, default=timedelta(minutes=10))
+    duration: Mapped[timedelta] = mapped_column(INTERVAL, default=timedelta(minutes=10))
     start_time: Mapped[time] = mapped_column(Time, default=time(7, 0))
     end_time: Mapped[time] = mapped_column(Time, default=time(22, 0))
 
     doctor: Mapped[Doctor] = relationship(
         "Doctor", back_populates="schedules"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("doctor_id", "date"),
     )

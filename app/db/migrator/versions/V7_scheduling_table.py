@@ -2,7 +2,7 @@
 
 Revision ID: V7
 Revises: V6
-Create Date: 2025-11-26 19:25:31.105541
+Create Date: 2025-11-27 23:56:47.781033
 
 """
 from typing import Sequence, Union
@@ -24,7 +24,7 @@ def upgrade() -> None:
     op.create_table('schedule',
     sa.Column('doctor_id', sa.UUID(), nullable=False),
     sa.Column('date', sa.Date(), nullable=False),
-    sa.Column('duration', sa.Time(), nullable=False),
+    sa.Column('duration', postgresql.INTERVAL(), nullable=False),
     sa.Column('start_time', sa.Time(), nullable=False),
     sa.Column('end_time', sa.Time(), nullable=False),
     sa.Column('id', sa.UUID(), server_default=sa.text('gen_random_uuid()'), nullable=False),
@@ -32,6 +32,7 @@ def upgrade() -> None:
     sa.Column('dt_updated', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['doctor_id'], ['doctor.id'], name=op.f('fk__schedule__doctor_id__doctor'), onupdate='CASCADE', ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk__schedule')),
+    sa.UniqueConstraint('doctor_id', 'date', name=op.f('uq__schedule__doctor_id_date')),
     sa.UniqueConstraint('id', name=op.f('uq__schedule__id'))
     )
     # ### end Alembic commands ###
