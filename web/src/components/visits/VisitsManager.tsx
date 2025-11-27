@@ -13,13 +13,15 @@ import {
     Popconfirm,
     Tooltip,
     Dropdown,
-    Typography
+    Typography,
+    Switch
 } from 'antd'
 import type {ColumnsType} from 'antd/es/table'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import dayjs, {Dayjs} from 'dayjs'
 import {api} from '../../lib/api'
 import type {VisitCreateRequest, VisitResponse, VisitStatusEnum, VisitUpdateRequest} from '../../api'
+import {createSchedule, fetchSchedule, type ScheduleCreateRequest, type ScheduleResponse} from '../../api/schedules'
 import {fetchVisits, type VisitPageResponse, type VisitQueryParams} from '../../api/visits'
 import {getErrorMessage} from '../../lib/errors'
 import EntitySelect from '../EntitySelect'
@@ -27,6 +29,7 @@ import {Info, Pencil, Trash2} from 'lucide-react'
 import {useNavigate, useLocation} from 'react-router-dom'
 import EntityLink from '../EntityLink'
 import {TimePicker} from 'antd' // <- используем нормальный тайм-пикер
+import axios from 'axios'
 
 import {Modal as AntModal, Checkbox} from 'antd'
 import type {CheckboxChangeEvent} from 'antd/es/checkbox'
@@ -75,6 +78,12 @@ type VisitFormValues = {
     procedure?: string
     cabinet?: string
     cost?: number
+}
+
+type ScheduleFormValues = {
+    start_time?: Dayjs
+    end_time?: Dayjs
+    duration?: number
 }
 
 type ShowColumns = Partial<{
@@ -218,6 +227,49 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         return {h: Number(m[1]), m: Number(m[2])}
     }, [])
 
+    const parseHHMMSS = useCallback((s: string): { h: number; m: number; s: number } => {
+        const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec((s ?? '').trim())
+        if (!m) return {h: 0, m: 0, s: 0}
+        return {h: Number(m[1]), m: Number(m[2]), s: m[3] ? Number(m[3]) : 0}
+    }, [])
+
+    const parseDurationMinutes = useCallback((s: string): number => {
+        const trimmed = (s ?? '').trim()
+
+        // Поддерживаем ISO-8601 длительности, например "PT10M", "P1DT2H30M"
+        const isoMatch = /^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(trimmed)
+        if (isoMatch) {
+            const days = Number(isoMatch[1] ?? 0)
+            const hours = Number(isoMatch[2] ?? 0)
+            const minutes = Number(isoMatch[3] ?? 0)
+            const seconds = Number(isoMatch[4] ?? 0)
+            return days * 24 * 60 + hours * 60 + minutes + Math.floor(seconds / 60)
+        }
+
+        // Поддерживаем формат "HH:MM:SS" и варианты вида "1 day, 02:00:00"
+        const match = /(?:(\d+)\s+day[s]?,\s*)?(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed)
+        if (!match) return 0
+        const days = Number(match[1] ?? 0)
+        const hours = Number(match[2] ?? 0)
+        const minutes = Number(match[3] ?? 0)
+        const seconds = Number(match[4] ?? 0)
+        return days * 24 * 60 + hours * 60 + minutes + Math.floor(seconds / 60)
+    }, [])
+
+    const toDurationString = useCallback((minutes: number): string => {
+        const safeMinutes = Math.max(0, Math.floor(minutes))
+        const days = Math.floor(safeMinutes / (24 * 60))
+        const remainderAfterDays = safeMinutes % (24 * 60)
+        const hrs = Math.floor(remainderAfterDays / 60)
+        const mins = remainderAfterDays % 60
+
+        const parts = [] as string[]
+        if (hrs) parts.push(`${hrs}H`)
+        if (mins || (!hrs && !days)) parts.push(`${mins}M`)
+
+        return `P${days ? `${days}D` : ''}T${parts.join('')}`
+    }, [])
+
     function disabledHoursForWorkday() {
         const arr: number[] = []
         for (let h = 0; h < 24; h++) {
@@ -233,10 +285,21 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         start_date: string
         end_date: string
     }
-    type RowData = VisitResponse | GapRow
+    type SlotRow = {
+        __slot: true
+        id: string
+        start_date: string
+        end_date: string
+        durationMinutes: number
+    }
+    type RowData = VisitResponse | GapRow | SlotRow
 
     function isGap(row: unknown): row is GapRow {
         return typeof row === 'object' && row !== null && '__gap' in row && (row as GapRow).__gap
+    }
+
+    function isSlot(row: unknown): row is SlotRow {
+        return typeof row === 'object' && row !== null && '__slot' in row && (row as SlotRow).__slot
     }
 
 
@@ -288,6 +351,73 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         return rows
     }, [parseHHMM])
 
+    const buildScheduleRows = useCallback((day: Dayjs, visits: VisitResponse[], schedule: ScheduleResponse): RowData[] => {
+        const durationMinutes = parseDurationMinutes(schedule.duration)
+        if (!durationMinutes || durationMinutes <= 0) return visits
+
+        const {h: startH, m: startM, s: startS} = parseHHMMSS(schedule.start_time)
+        const {h: endH, m: endM, s: endS} = parseHHMMSS(schedule.end_time)
+
+        const dayStart = day.startOf('day').hour(startH).minute(startM).second(startS).millisecond(0)
+        const dayEnd = day.startOf('day').hour(endH).minute(endM).second(endS).millisecond(0)
+
+        if (!dayEnd.isAfter(dayStart)) return visits
+
+        const sortedVisits = [...visits].sort((a, b) =>
+            dayjs(a.start_date).valueOf() - dayjs(b.start_date).valueOf()
+        )
+
+        const getVisitRange = (visit: VisitResponse) => {
+            const start = dayjs(visit.start_date).millisecond(0)
+            const end = visit.end_date ? dayjs(visit.end_date).millisecond(0) : start
+            return {start, end}
+        }
+
+        const rows: RowData[] = []
+        let cursor = dayStart
+        let visitIdx = 0
+        let guard = 0
+
+        while (cursor.isBefore(dayEnd) && guard < 10_000) {
+            const slotEnd = cursor.add(durationMinutes, 'minute')
+            let overlappingVisit: VisitResponse | undefined
+
+            while (visitIdx < sortedVisits.length) {
+                const visit = sortedVisits[visitIdx]
+                const {start, end} = getVisitRange(visit)
+
+                if (end.isBefore(cursor) || end.isSame(cursor)) {
+                    visitIdx += 1
+                    continue
+                }
+
+                if (start.isBefore(slotEnd) && end.isAfter(cursor)) {
+                    overlappingVisit = visit
+                }
+
+                break
+            }
+
+            if (overlappingVisit) {
+                rows.push(overlappingVisit)
+                cursor = getVisitRange(overlappingVisit).end
+            } else {
+                rows.push({
+                    __slot: true,
+                    id: `slot-${cursor.toISOString()}`,
+                    start_date: cursor.toISOString(),
+                    end_date: slotEnd.toISOString(),
+                    durationMinutes,
+                })
+                cursor = slotEnd
+            }
+
+            guard += 1
+        }
+
+        return rows
+    }, [parseDurationMinutes, parseHHMMSS])
+
     type EditableField = 'procedure' | 'cost'
 
     const [editingCell, setEditingCell] = useState<{ id: string; field: EditableField } | null>(null)
@@ -338,6 +468,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 : ['date', 'time', 'client', 'doctor', 'procedure', 'status', 'cost'] // общий
     )
 
+    const [ignoreSchedule, setIgnoreSchedule] = useState(false)
+
     const [clientsMap, setClientsMap] = useState<Record<string, ClientMini>>({})
     const [doctorsMap, setDoctorsMap] = useState<Record<string, DoctorMini>>({})
 
@@ -367,17 +499,49 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         return p
     }, [isDoctorDayMode, clientId, doctorId, status, cabinet, procedure, day, range, pageSize, page])
 
+    const scheduleDate = useMemo(() => day?.format('YYYY-MM-DD'), [day])
+
+    const {
+        data: scheduleData,
+        isFetching: isScheduleLoading,
+        isError: isScheduleError,
+    } = useQuery<ScheduleResponse | null>({
+        queryKey: ['schedule', scheduleDate, effDoctorId],
+        enabled: isDoctorDayMode && !!scheduleDate && !!effDoctorId,
+        queryFn: async () => {
+            try {
+                return await fetchSchedule(scheduleDate!, effDoctorId!)
+            } catch (err: unknown) {
+                if (axios.isAxiosError(err) && err.response?.status === 404) return null
+                throw err
+            }
+        },
+        retry: false,
+    })
+
     const {data, isLoading} = useQuery<VisitPageResponse>({
         queryKey: ['visits', params],
         queryFn: () => fetchVisits(params),
     })
 
+    const scheduleTableData: RowData[] | null = useMemo(() => {
+        if (!isDoctorDayMode || !scheduleData || !day) return null
+        return buildScheduleRows(day, data?.items ?? [], scheduleData)
+    }, [isDoctorDayMode, scheduleData, day, data?.items, buildScheduleRows])
+
+    useEffect(() => {
+        if (isScheduleError) {
+            message.warning('Не удалось загрузить разлиновку, показываем обычный список')
+        }
+    }, [isScheduleError])
+
     const tableData: RowData[] = useMemo(() => {
         const items = data?.items ?? []
+        if (scheduleTableData && !ignoreSchedule) return scheduleTableData
         if (!isDayMode) return items as RowData[]
         if (!day) return []
         return buildDayRows(day, items, MIN_TIME, MAX_TIME)
-    }, [isDayMode, data, day, buildDayRows, MIN_TIME, MAX_TIME])
+    }, [isDayMode, data, day, buildDayRows, MIN_TIME, MAX_TIME, scheduleTableData, ignoreSchedule])
 
     const totalCostValue = data?.total_cost ?? 0
     const totalCostDisplay = isLoading && !data
@@ -475,6 +639,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const [open, setOpen] = useState(false)
     const [editing, setEditing] = useState<VisitResponse | null>(null)
     const [form] = Form.useForm<VisitFormValues>()
+    const [scheduleForm] = Form.useForm<ScheduleFormValues>()
+    const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
 
     const createMut = useMutation({
         mutationFn: (b: VisitCreateRequest) => createVisit(b),
@@ -522,16 +688,26 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         onError: (err: unknown) => message.error(getErrorMessage(err)),
     })
 
+    const createScheduleMut = useMutation({
+        mutationFn: (b: ScheduleCreateRequest) => createSchedule(b),
+        onSuccess: () => {
+            message.success('Разлиновка сохранена')
+            qc.invalidateQueries({queryKey: ['schedule']})
+            setScheduleModalOpen(false)
+        },
+        onError: (err: unknown) => message.error(getErrorMessage(err)),
+    })
+
     // -------- Колонки --------
     let totalCols = 0
-    const columns: ColumnsType<VisitResponse | GapRow> = []
+    const columns: ColumnsType<RowData> = []
     if (!isDayMode && show?.date !== false) {
         columns.push({
             title: 'Дата',
             width: 110,
             dataIndex: 'start_date',
-            render: (iso: string, row: VisitResponse | GapRow) =>
-                isGap(row)
+            render: (iso: string, row: RowData) =>
+                isGap(row) || isSlot(row)
                     ? {children: null, props: {colSpan: 0}}
                     : dayjs(iso).format('DD.MM.YYYY'),
         })
@@ -540,7 +716,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         title: 'Время',
         key: 'time',
         width: 140,
-        render: (row: VisitResponse | GapRow) => {
+        render: (row: RowData) => {
             const start = dayjs(row.start_date).format('HH:mm')
             const end = row.end_date ? dayjs(row.end_date).format('HH:mm') : ''
             const label = end ? `${start}–${end}` : start
@@ -571,9 +747,16 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         columns.push({
             title: 'Пациент',
             key: 'client',
-            render: (_: unknown, row: VisitResponse | GapRow) => {
+            render: (_: unknown, row: RowData) => {
                 if (isGap(row)) {
                     return {children: null, props: {colSpan: 0}}
+                }
+                if (isSlot(row)) {
+                    return (
+                        <Button type="dashed" size="small" onClick={() => openSlotForm(row)}>
+                            Добавить
+                        </Button>
+                    )
                 }
 
                 const v = row as VisitResponse
@@ -594,16 +777,18 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         columns.push({
             title: 'Врач',
             key: 'doctor',
-            render: (_: unknown, row: VisitResponse | GapRow) =>
+            render: (_: unknown, row: RowData) =>
                 isGap(row)
                     ? {children: null, props: {colSpan: 0}}
-                    : (
-                        <EntityLink
-                            kind="doctors"
-                            id={(row as VisitResponse).doctor_id}
-                            label={(row as VisitResponse).doctor_name}
-                        />
-                    ),
+                    : isSlot(row)
+                        ? '—'
+                        : (
+                            <EntityLink
+                                kind="doctors"
+                                id={(row as VisitResponse).doctor_id}
+                                label={(row as VisitResponse).doctor_name}
+                            />
+                        ),
         })
     }
     if (show?.procedure !== false) {
@@ -612,8 +797,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             dataIndex: 'procedure',
             ellipsis: true,
             onCell: () => ({style: {cursor: 'text'}}),
-            render: (_: string | null | undefined, row: VisitResponse | GapRow) => {
+            render: (_: string | null | undefined, row: RowData) => {
                 if (isGap(row)) return {children: null, props: {colSpan: 0}}
+                if (isSlot(row)) return '—'
                 const v = row as VisitResponse
 
                 const isEditing = editingCell?.id === v.id && editingCell.field === 'procedure'
@@ -649,10 +835,12 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         columns.push({
             title: 'Кабинет',
             dataIndex: 'cabinet',
-            render: (v: string | null | undefined, row: VisitResponse | GapRow) =>
+            render: (v: string | null | undefined, row: RowData) =>
                 isGap(row)
                     ? {children: null, props: {colSpan: 0}}
-                    : (v ?? '—'),
+                    : isSlot(row)
+                        ? '—'
+                        : (v ?? '—'),
         })
     }
     if (show?.cost !== false) {
@@ -662,8 +850,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             width: 110,
             align: 'right',
             onCell: () => ({style: {cursor: 'text'}}),
-            render: (_: number | null | undefined, row: VisitResponse | GapRow) => {
+            render: (_: number | null | undefined, row: RowData) => {
                 if (isGap(row)) return {children: null, props: {colSpan: 0}}
+                if (isSlot(row)) return '—'
                 const v = row as VisitResponse
 
                 const isEditing = editingCell?.id === v.id && editingCell.field === 'cost'
@@ -704,8 +893,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             dataIndex: 'status',
             width: 56,
             align: 'center',
-            render: (s: VisitStatusEnum, row: VisitResponse | GapRow) => {
+            render: (s: VisitStatusEnum, row: RowData) => {
                 if (isGap(row)) return {children: null, props: {colSpan: 0}}
+                if (isSlot(row)) return '—'
 
                 const v = row as VisitResponse
                 return (
@@ -738,8 +928,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         columns.push({
             title: 'Действия',
             width: 150,
-            render: (_: unknown, row: VisitResponse | GapRow) => {
+            render: (_: unknown, row: RowData) => {
                 if (isGap(row)) return {children: null, props: {colSpan: 0}}
+                if (isSlot(row)) return null
 
                 const v = row as VisitResponse
                 return (
@@ -854,6 +1045,57 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         }
     }
 
+    const openSlotForm = useCallback((slot: SlotRow) => {
+        const start = dayjs(slot.start_date)
+        setEditing(null)
+        setOpen(true)
+        form.resetFields()
+        const maybeDuration = DURATIONS.includes(slot.durationMinutes as DurationMin)
+            ? (slot.durationMinutes as DurationMin)
+            : undefined
+        form.setFieldsValue({
+            client_id: context?.clientId,
+            doctor_id: context?.doctorId ?? effDoctorId,
+            date: start,
+            time_start: start,
+            duration: maybeDuration ?? undefined,
+        })
+    }, [context?.clientId, context?.doctorId, effDoctorId, form])
+
+    const openScheduleModal = useCallback(() => {
+        const {h: minH, m: minM} = parseHHMM(MIN_TIME)
+        const {h: maxH, m: maxM} = parseHHMM(MAX_TIME)
+        const baseDay = (day ?? dayjs()).startOf('day')
+
+        scheduleForm.resetFields()
+        scheduleForm.setFieldsValue({
+            start_time: baseDay.clone().hour(minH).minute(minM),
+            end_time: baseDay.clone().hour(maxH).minute(maxM),
+            duration: 10,
+        })
+        setScheduleModalOpen(true)
+    }, [MIN_TIME, MAX_TIME, day, parseHHMM, scheduleForm])
+
+    const submitSchedule = useCallback(async () => {
+        if (!effDoctorId || !day) {
+            message.warning('Выберите врача и дату для разлиновки')
+            return
+        }
+
+        const v = await scheduleForm.validateFields()
+        if (!v.start_time || !v.end_time || !v.duration) return
+
+        const body: ScheduleCreateRequest = {
+            doctor_id: effDoctorId,
+            date: day.format('YYYY-MM-DD'),
+            start_time: v.start_time.format('HH:mm:ss'),
+            end_time: v.end_time.format('HH:mm:ss'),
+            duration: toDurationString(v.duration),
+        }
+
+        createScheduleMut.mutate(body)
+    }, [createScheduleMut, day, effDoctorId, scheduleForm, toDurationString])
+
     function resetFilters() {
         setClientId(context?.clientId)
         setDoctorId(context?.doctorId)
@@ -944,6 +1186,15 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             }
                         }}
                     />
+                    {isDoctorDayMode && scheduleData === null && !isScheduleLoading && (
+                        <Button
+                            type="dashed"
+                            onClick={openScheduleModal}
+                            disabled={!day || !effDoctorId}
+                        >
+                            Разлиновать
+                        </Button>
+                    )}
                     {!isDoctorDayMode && (
                         <InputNumber
                             min={1}
@@ -973,11 +1224,29 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                     </Typography.Text>
                     <Typography.Text strong>{totalCostDisplay}</Typography.Text>
                 </Space>
+                {isDoctorDayMode && scheduleData && (
+                    <Space size="small" align="center">
+                        <Typography.Text type="secondary">
+                            Разлиновка: {scheduleData.start_time.slice(0, 5)}–{scheduleData.end_time.slice(0, 5)} · шаг {parseDurationMinutes(scheduleData.duration)} мин
+                        </Typography.Text>
+                        <Switch
+                            checked={ignoreSchedule}
+                            onChange={(checked: boolean) => setIgnoreSchedule(checked)}
+                            size="small"
+                        />
+                        <Typography.Text type="secondary">Отображать без разлиновки</Typography.Text>
+                    </Space>
+                )}
+                {isDoctorDayMode && scheduleData === null && !isScheduleLoading && (
+                    <Typography.Text type="secondary">
+                        Разлиновки для выбранного дня нет, отображаем стандартные интервалы.
+                    </Typography.Text>
+                )}
             </Space>
 
-            <Table<VisitResponse | GapRow>
-                rowKey={(r) => (isGap(r) ? r.id : (r as VisitResponse).id)}
-                loading={isLoading}
+            <Table<RowData>
+                rowKey={(r) => (isGap(r) ? r.id : isSlot(r) ? r.id : (r as VisitResponse).id)}
+                loading={isLoading || isScheduleLoading}
                 dataSource={tableData}
                 columns={columns}
                 pagination={
@@ -1004,6 +1273,58 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                         }
                 }
             />
+
+            <Modal
+                title="Разлиновка"
+                open={scheduleModalOpen}
+                onCancel={() => setScheduleModalOpen(false)}
+                onOk={submitSchedule}
+                okText="Сохранить"
+                cancelText="Отмена"
+                confirmLoading={createScheduleMut.isPending}
+            >
+                <Form form={scheduleForm} layout="vertical">
+                    <Form.Item
+                        name="start_time"
+                        label="Начало рабочего дня"
+                        rules={[{required: true, message: 'Укажите время начала'}]}
+                    >
+                        <TimePicker
+                            format="HH:mm"
+                            minuteStep={5}
+                            disabledHours={disabledHoursForWorkday}
+                            hideDisabledOptions
+                            inputReadOnly
+                            needConfirm={false}
+                            showNow={false}
+                        />
+                    </Form.Item>
+
+                    <Form.Item
+                        name="end_time"
+                        label="Конец рабочего дня"
+                        rules={[{required: true, message: 'Укажите время окончания'}]}
+                    >
+                        <TimePicker
+                            format="HH:mm"
+                            minuteStep={5}
+                            disabledHours={disabledHoursForWorkday}
+                            hideDisabledOptions
+                            inputReadOnly
+                            needConfirm={false}
+                            showNow={false}
+                        />
+                    </Form.Item>
+
+                    <Form.Item
+                        name="duration"
+                        label="Длительность приёма (минуты)"
+                        rules={[{required: true, message: 'Укажите длительность'}]}
+                    >
+                        <InputNumber min={1} max={240} style={{width: '100%'}}/>
+                    </Form.Item>
+                </Form>
+            </Modal>
 
             <Modal
                 title={editing ? 'Редактировать приём' : 'Новый приём'}
