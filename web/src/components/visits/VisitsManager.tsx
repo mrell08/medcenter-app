@@ -362,22 +362,44 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
 
         if (!dayEnd.isAfter(dayStart)) return visits
 
-        const visitsMap = new Map<number, VisitResponse>()
-        for (const v of visits) {
-            const key = dayjs(v.start_date).startOf('minute').valueOf()
-            visitsMap.set(key, v)
+        const sortedVisits = [...visits].sort((a, b) =>
+            dayjs(a.start_date).valueOf() - dayjs(b.start_date).valueOf()
+        )
+
+        const getVisitRange = (visit: VisitResponse) => {
+            const start = dayjs(visit.start_date).millisecond(0)
+            const end = visit.end_date ? dayjs(visit.end_date).millisecond(0) : start
+            return {start, end}
         }
 
         const rows: RowData[] = []
         let cursor = dayStart
+        let visitIdx = 0
         let guard = 0
 
         while (cursor.isBefore(dayEnd) && guard < 10_000) {
             const slotEnd = cursor.add(durationMinutes, 'minute')
-            const visit = visitsMap.get(cursor.valueOf())
+            let overlappingVisit: VisitResponse | undefined
 
-            if (visit) {
-                rows.push(visit)
+            while (visitIdx < sortedVisits.length) {
+                const visit = sortedVisits[visitIdx]
+                const {start, end} = getVisitRange(visit)
+
+                if (end.isSameOrBefore(cursor)) {
+                    visitIdx += 1
+                    continue
+                }
+
+                if (start.isBefore(slotEnd) && end.isAfter(cursor)) {
+                    overlappingVisit = visit
+                }
+
+                break
+            }
+
+            if (overlappingVisit) {
+                rows.push(overlappingVisit)
+                cursor = getVisitRange(overlappingVisit).end
             } else {
                 rows.push({
                     __slot: true,
@@ -386,9 +408,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                     end_date: slotEnd.toISOString(),
                     durationMinutes,
                 })
+                cursor = slotEnd
             }
 
-            cursor = slotEnd
             guard += 1
         }
 
