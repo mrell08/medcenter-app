@@ -233,8 +233,20 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     }, [])
 
     const parseDurationMinutes = useCallback((s: string): number => {
+        const trimmed = (s ?? '').trim()
+
+        // Поддерживаем ISO-8601 длительности, например "PT10M", "P1DT2H30M"
+        const isoMatch = /^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(trimmed)
+        if (isoMatch) {
+            const days = Number(isoMatch[1] ?? 0)
+            const hours = Number(isoMatch[2] ?? 0)
+            const minutes = Number(isoMatch[3] ?? 0)
+            const seconds = Number(isoMatch[4] ?? 0)
+            return days * 24 * 60 + hours * 60 + minutes + Math.floor(seconds / 60)
+        }
+
         // Поддерживаем формат "HH:MM:SS" и варианты вида "1 day, 02:00:00"
-        const match = /(?:(\d+)\s+day[s]?,\s*)?(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec((s ?? '').trim())
+        const match = /(?:(\d+)\s+day[s]?,\s*)?(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed)
         if (!match) return 0
         const days = Number(match[1] ?? 0)
         const hours = Number(match[2] ?? 0)
@@ -244,10 +256,17 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     }, [])
 
     const toDurationString = useCallback((minutes: number): string => {
-        const hrs = Math.floor(minutes / 60)
-        const mins = minutes % 60
-        const pad = (n: number) => String(n).padStart(2, '0')
-        return `${pad(hrs)}:${pad(mins)}:00`
+        const safeMinutes = Math.max(0, Math.floor(minutes))
+        const days = Math.floor(safeMinutes / (24 * 60))
+        const remainderAfterDays = safeMinutes % (24 * 60)
+        const hrs = Math.floor(remainderAfterDays / 60)
+        const mins = remainderAfterDays % 60
+
+        const parts = [] as string[]
+        if (hrs) parts.push(`${hrs}H`)
+        if (mins || (!hrs && !days)) parts.push(`${mins}M`)
+
+        return `P${days ? `${days}D` : ''}T${parts.join('')}`
     }, [])
 
     function disabledHoursForWorkday() {
