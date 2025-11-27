@@ -13,7 +13,8 @@ import {
     Popconfirm,
     Tooltip,
     Dropdown,
-    Typography
+    Typography,
+    Switch
 } from 'antd'
 import type {ColumnsType} from 'antd/es/table'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
@@ -467,6 +468,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 : ['date', 'time', 'client', 'doctor', 'procedure', 'status', 'cost'] // общий
     )
 
+    const [ignoreSchedule, setIgnoreSchedule] = useState(false)
+
     const [clientsMap, setClientsMap] = useState<Record<string, ClientMini>>({})
     const [doctorsMap, setDoctorsMap] = useState<Record<string, DoctorMini>>({})
 
@@ -534,11 +537,11 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
 
     const tableData: RowData[] = useMemo(() => {
         const items = data?.items ?? []
-        if (scheduleTableData) return scheduleTableData
+        if (scheduleTableData && !ignoreSchedule) return scheduleTableData
         if (!isDayMode) return items as RowData[]
         if (!day) return []
         return buildDayRows(day, items, MIN_TIME, MAX_TIME)
-    }, [isDayMode, data, day, buildDayRows, MIN_TIME, MAX_TIME, scheduleTableData])
+    }, [isDayMode, data, day, buildDayRows, MIN_TIME, MAX_TIME, scheduleTableData, ignoreSchedule])
 
     const totalCostValue = data?.total_cost ?? 0
     const totalCostDisplay = isLoading && !data
@@ -1222,9 +1225,17 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                     <Typography.Text strong>{totalCostDisplay}</Typography.Text>
                 </Space>
                 {isDoctorDayMode && scheduleData && (
-                    <Typography.Text type="secondary">
-                        Разлиновка: {scheduleData.start_time.slice(0, 5)}–{scheduleData.end_time.slice(0, 5)} · шаг {parseDurationMinutes(scheduleData.duration)} мин
-                    </Typography.Text>
+                    <Space size="small" align="center">
+                        <Typography.Text type="secondary">
+                            Разлиновка: {scheduleData.start_time.slice(0, 5)}–{scheduleData.end_time.slice(0, 5)} · шаг {parseDurationMinutes(scheduleData.duration)} мин
+                        </Typography.Text>
+                        <Switch
+                            checked={ignoreSchedule}
+                            onChange={(checked: boolean) => setIgnoreSchedule(checked)}
+                            size="small"
+                        />
+                        <Typography.Text type="secondary">Отображать без разлиновки</Typography.Text>
+                    </Space>
                 )}
                 {isDoctorDayMode && scheduleData === null && !isScheduleLoading && (
                     <Typography.Text type="secondary">
@@ -1284,6 +1295,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             disabledHours={disabledHoursForWorkday}
                             hideDisabledOptions
                             inputReadOnly
+                            needConfirm={false}
+                            showNow={false}
                         />
                     </Form.Item>
 
@@ -1298,6 +1311,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             disabledHours={disabledHoursForWorkday}
                             hideDisabledOptions
                             inputReadOnly
+                            needConfirm={false}
+                            showNow={false}
                         />
                     </Form.Item>
 
