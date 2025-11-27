@@ -7,12 +7,6 @@ const ensureSevenPrefix = (digits: string): string => {
     return `7${digits}`
 }
 
-const applyPhoneMask = (digits: string): string => {
-    const padded = (digits + '__________').slice(0, 10)
-
-    return `+7 (${padded.slice(0, 3)}) ${padded.slice(3, 6)}-${padded.slice(6, 8)}-${padded.slice(8, 10)}`
-}
-
 export function formatPhoneNumber(value?: string | null): string {
     const rawDigits = cleanDigits(value ?? '')
     if (!rawDigits) return ''
