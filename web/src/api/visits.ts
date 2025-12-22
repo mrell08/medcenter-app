@@ -11,6 +11,7 @@ export type VisitQueryParams = {
     cabinet?: string
     procedure?: string
     status?: VisitStatusEnum
+    reserve_list?: boolean
 }
 
 export type VisitPageResponse = {
