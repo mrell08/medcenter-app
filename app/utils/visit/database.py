@@ -1,4 +1,5 @@
 import uuid
+from datetime import time
 from typing import Any
 
 from sqlalchemy import Date, Sequence, Time, asc, cast, desc, select, update, Select, func
@@ -102,6 +103,13 @@ async def dal_total_visits_cost_by_filter(
 # --- HELPERS ---
 
 def _search_stmt(search: VisitSearchRequest, stmt: Select[Any]) -> Select[Any]:
+    midnight = time(0, 0)
+    start_time = cast(Visit.start_date, Time)
+    if search.reserve_list:
+        stmt = stmt.where(start_time == midnight)
+    else:
+        stmt = stmt.where(start_time != midnight)
+
     if search.client_id:
         stmt = stmt.where(Visit.client_id == search.client_id)
     if search.doctor_id:
