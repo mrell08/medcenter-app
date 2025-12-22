@@ -21,7 +21,15 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import dayjs, {Dayjs} from 'dayjs'
 import {api} from '../../lib/api'
 import type {VisitCreateRequest, VisitResponse, VisitStatusEnum, VisitUpdateRequest} from '../../api'
-import {createSchedule, fetchSchedule, type ScheduleCreateRequest, type ScheduleResponse} from '../../api/schedules'
+import {
+    createSchedule,
+    deleteSchedule,
+    fetchSchedule,
+    updateSchedule,
+    type ScheduleCreateRequest,
+    type ScheduleResponse,
+    type ScheduleUpdateRequest,
+} from '../../api/schedules'
 import {fetchVisits, type VisitPageResponse, type VisitQueryParams} from '../../api/visits'
 import {getErrorMessage} from '../../lib/errors'
 import EntitySelect from '../EntitySelect'
@@ -83,7 +91,7 @@ type VisitFormValues = {
 type ScheduleFormValues = {
     start_time?: Dayjs
     end_time?: Dayjs
-    duration?: number
+    duration?: DurationMin
 }
 
 type ShowColumns = Partial<{
@@ -641,6 +649,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const [form] = Form.useForm<VisitFormValues>()
     const [scheduleForm] = Form.useForm<ScheduleFormValues>()
     const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
+    const [isScheduleEdit, setIsScheduleEdit] = useState(false)
 
     const createMut = useMutation({
         mutationFn: (b: VisitCreateRequest) => createVisit(b),
@@ -694,6 +703,29 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             message.success('Разлиновка сохранена')
             qc.invalidateQueries({queryKey: ['schedule']})
             setScheduleModalOpen(false)
+            setIsScheduleEdit(false)
+        },
+        onError: (err: unknown) => message.error(getErrorMessage(err)),
+    })
+
+    const updateScheduleMut = useMutation({
+        mutationFn: ({id, body}: { id: string; body: ScheduleUpdateRequest }) =>
+            updateSchedule(id, body),
+        onSuccess: () => {
+            message.success('Разлиновка обновлена')
+            qc.invalidateQueries({queryKey: ['schedule']})
+            setScheduleModalOpen(false)
+            setIsScheduleEdit(false)
+        },
+        onError: (err: unknown) => message.error(getErrorMessage(err)),
+    })
+
+    const deleteScheduleMut = useMutation({
+        mutationFn: (id: string) => deleteSchedule(id),
+        onSuccess: () => {
+            message.success('Разлиновка удалена')
+            qc.invalidateQueries({queryKey: ['schedule']})
+            setIgnoreSchedule(false)
         },
         onError: (err: unknown) => message.error(getErrorMessage(err)),
     })
@@ -1073,8 +1105,29 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             end_time: baseDay.clone().hour(maxH).minute(maxM),
             duration: 10,
         })
+        setIsScheduleEdit(false)
         setScheduleModalOpen(true)
     }, [MIN_TIME, MAX_TIME, day, parseHHMM, scheduleForm])
+
+    const openScheduleEditModal = useCallback(() => {
+        if (!scheduleData || !day) return
+        const baseDay = day.startOf('day')
+        const {h: startH, m: startM} = parseHHMMSS(scheduleData.start_time)
+        const {h: endH, m: endM} = parseHHMMSS(scheduleData.end_time)
+        const durationMinutes = parseDurationMinutes(scheduleData.duration)
+        const scheduleDuration = DURATIONS.includes(durationMinutes as DurationMin)
+            ? (durationMinutes as DurationMin)
+            : undefined
+
+        scheduleForm.resetFields()
+        scheduleForm.setFieldsValue({
+            start_time: baseDay.clone().hour(startH).minute(startM),
+            end_time: baseDay.clone().hour(endH).minute(endM),
+            duration: scheduleDuration,
+        })
+        setIsScheduleEdit(true)
+        setScheduleModalOpen(true)
+    }, [day, parseDurationMinutes, parseHHMMSS, scheduleData, scheduleForm])
 
     const submitSchedule = useCallback(async () => {
         if (!effDoctorId || !day) {
@@ -1085,16 +1138,28 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         const v = await scheduleForm.validateFields()
         if (!v.start_time || !v.end_time || !v.duration) return
 
-        const body: ScheduleCreateRequest = {
-            doctor_id: effDoctorId,
-            date: day.format('YYYY-MM-DD'),
+        const baseBody = {
             start_time: v.start_time.format('HH:mm:ss'),
             end_time: v.end_time.format('HH:mm:ss'),
             duration: toDurationString(v.duration),
         }
 
+        if (isScheduleEdit && scheduleData) {
+            const body: ScheduleUpdateRequest = {
+                ...baseBody,
+            }
+            updateScheduleMut.mutate({id: scheduleData.id, body})
+            return
+        }
+
+        const body: ScheduleCreateRequest = {
+            doctor_id: effDoctorId,
+            date: day.format('YYYY-MM-DD'),
+            ...baseBody,
+        }
+
         createScheduleMut.mutate(body)
-    }, [createScheduleMut, day, effDoctorId, scheduleForm, toDurationString])
+    }, [createScheduleMut, day, effDoctorId, isScheduleEdit, scheduleData, scheduleForm, toDurationString, updateScheduleMut])
 
     function resetFilters() {
         setClientId(context?.clientId)
@@ -1186,14 +1251,47 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             }
                         }}
                     />
-                    {isDoctorDayMode && scheduleData === null && !isScheduleLoading && (
-                        <Button
-                            type="dashed"
-                            onClick={openScheduleModal}
-                            disabled={!day || !effDoctorId}
-                        >
-                            Разлиновать
-                        </Button>
+                    {isDoctorDayMode && !isScheduleLoading && (
+                        scheduleData ? (
+                            <Space size="small">
+                                <Button
+                                    type="default"
+                                    onClick={openScheduleEditModal}
+                                    disabled={!day || !effDoctorId}
+                                >
+                                    Редактировать
+                                </Button>
+                                <Popconfirm
+                                    title="Удалить разлиновку?"
+                                    okText="Удалить"
+                                    cancelText="Отмена"
+                                    okButtonProps={{
+                                        danger: true,
+                                        loading: deleteScheduleMut.isPending,
+                                    }}
+                                    onConfirm={(e) => {
+                                        e?.stopPropagation?.()
+                                        deleteScheduleMut.mutate(scheduleData.id)
+                                    }}
+                                    onCancel={(e) => e?.stopPropagation?.()}
+                                >
+                                    <Button
+                                        danger
+                                        loading={deleteScheduleMut.isPending}
+                                    >
+                                        Удалить
+                                    </Button>
+                                </Popconfirm>
+                            </Space>
+                        ) : (
+                            <Button
+                                type="dashed"
+                                onClick={openScheduleModal}
+                                disabled={!day || !effDoctorId}
+                            >
+                                Разлиновать
+                            </Button>
+                        )
                     )}
                     {!isDoctorDayMode && (
                         <InputNumber
@@ -1275,13 +1373,16 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             />
 
             <Modal
-                title="Разлиновка"
+                title={isScheduleEdit ? 'Редактировать разлиновку' : 'Разлиновка'}
                 open={scheduleModalOpen}
-                onCancel={() => setScheduleModalOpen(false)}
+                onCancel={() => {
+                    setScheduleModalOpen(false)
+                    setIsScheduleEdit(false)
+                }}
                 onOk={submitSchedule}
                 okText="Сохранить"
                 cancelText="Отмена"
-                confirmLoading={createScheduleMut.isPending}
+                confirmLoading={createScheduleMut.isPending || updateScheduleMut.isPending}
             >
                 <Form form={scheduleForm} layout="vertical">
                     <Form.Item
@@ -1321,7 +1422,10 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                         label="Длительность приёма (минуты)"
                         rules={[{required: true, message: 'Укажите длительность'}]}
                     >
-                        <InputNumber min={1} max={240} style={{width: '100%'}}/>
+                        <Select
+                            placeholder="Минуты"
+                            options={DURATIONS.map((m) => ({value: m, label: `${m} мин`}))}
+                        />
                     </Form.Item>
                 </Form>
             </Modal>

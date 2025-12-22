@@ -19,6 +19,8 @@ export type ScheduleResponse = {
     duration: string
 }
 
+export type ScheduleUpdateRequest = Partial<ScheduleCreateRequest>
+
 export async function fetchSchedule(date: string, doctorId: string): Promise<ScheduleResponse> {
     const res = await api.get<ScheduleResponse>(`/schedules/${date}/${doctorId}`)
     return res.data
@@ -29,3 +31,14 @@ export async function createSchedule(body: ScheduleCreateRequest): Promise<Sched
     return res.data
 }
 
+export async function updateSchedule(
+    scheduleId: string,
+    body: ScheduleUpdateRequest
+): Promise<ScheduleResponse> {
+    const res = await api.patch<ScheduleResponse>(`/schedules/${scheduleId}`, body)
+    return res.data
+}
+
+export async function deleteSchedule(scheduleId: string): Promise<void> {
+    await api.delete(`/schedules/${scheduleId}`)
+}
