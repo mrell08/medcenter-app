@@ -507,6 +507,18 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         return p
     }, [isDoctorDayMode, clientId, doctorId, status, cabinet, procedure, day, range, pageSize, page])
 
+    const reserveParams: VisitQueryParams | null = useMemo(() => {
+        if (!isDoctorDayMode || !day || !effDoctorId) return null
+        return {
+            limit: 10000,
+            offset: 0,
+            doctor_id: effDoctorId,
+            start_date: day.startOf('day').toISOString(),
+            end_date: day.endOf('day').toISOString(),
+            reserve_list: true,
+        }
+    }, [day, effDoctorId, isDoctorDayMode])
+
     const scheduleDate = useMemo(() => day?.format('YYYY-MM-DD'), [day])
 
     const {
@@ -530,6 +542,15 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const {data, isLoading} = useQuery<VisitPageResponse>({
         queryKey: ['visits', params],
         queryFn: () => fetchVisits(params),
+    })
+
+    const {
+        data: reserveData,
+        isLoading: isReserveLoading,
+    } = useQuery<VisitPageResponse>({
+        queryKey: ['visits', 'reserve', reserveParams],
+        queryFn: () => fetchVisits(reserveParams!),
+        enabled: !!reserveParams,
     })
 
     const scheduleTableData: RowData[] | null = useMemo(() => {
@@ -646,10 +667,26 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     // -------- Модалка / форма --------
     const [open, setOpen] = useState(false)
     const [editing, setEditing] = useState<VisitResponse | null>(null)
+    const [isReserveCreate, setIsReserveCreate] = useState(false)
+    const [isReserveAssign, setIsReserveAssign] = useState(false)
     const [form] = Form.useForm<VisitFormValues>()
     const [scheduleForm] = Form.useForm<ScheduleFormValues>()
     const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
     const [isScheduleEdit, setIsScheduleEdit] = useState(false)
+
+    const openReserveAssign = useCallback((v: VisitResponse) => {
+        setEditing(v)
+        setIsReserveCreate(false)
+        setIsReserveAssign(true)
+        setOpen(true)
+        form.resetFields()
+        form.setFieldsValue({
+            client_id: context?.clientId ?? v.client_id,
+            doctor_id: context?.doctorId ?? v.doctor_id,
+            date: dayjs(v.start_date),
+            duration: 10,
+        })
+    }, [context?.clientId, context?.doctorId, form])
 
     const createMut = useMutation({
         mutationFn: (b: VisitCreateRequest) => createVisit(b),
@@ -658,6 +695,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             qc.invalidateQueries({queryKey: ['visits']})
             notifyTotalsChange()
             setOpen(false)
+            setIsReserveCreate(false)
+            setIsReserveAssign(false)
             form.resetFields()
         },
         onError: (err: unknown) => message.error(getErrorMessage(err)),
@@ -671,6 +710,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             notifyTotalsChange()
             setOpen(false)
             setEditing(null)
+            setIsReserveCreate(false)
+            setIsReserveAssign(false)
             form.resetFields()
         },
         onError: (err: unknown) => message.error(getErrorMessage(err)),
@@ -982,6 +1023,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             title="Редактировать"
                             onClick={() => {
                                 setEditing(v)
+                                setIsReserveCreate(false)
+                                setIsReserveAssign(false)
                                 setOpen(true)
                                 const start = dayjs(v.start_date)
                                 const end = dayjs(v.end_date)
@@ -1038,16 +1081,65 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     }
     totalCols = columns.length
 
+    const reserveAssignColumn = useMemo(() => ({
+        title: '',
+        key: 'reserve_assign',
+        width: 170,
+        render: (_: unknown, row: RowData) => {
+            if (isGap(row) || isSlot(row)) return null
+            const v = row as VisitResponse
+            return (
+                <Button type="dashed" size="small" onClick={() => openReserveAssign(v)}>
+                    Назначить время
+                </Button>
+            )
+        },
+    }), [openReserveAssign])
+
+    const reserveColumns = useMemo(() => {
+        const base = columns.filter((col) => col.key !== 'time')
+        const clientIndex = base.findIndex((col) => col.key === 'client')
+        const insertAt = clientIndex >= 0 ? clientIndex : 0
+        base.splice(insertAt, 0, reserveAssignColumn)
+        return base
+    }, [columns, reserveAssignColumn])
+
 
     // -------- Сабмит формы --------
     const onSubmit = async () => {
         const v = await form.validateFields()
 
-        const startISO = v.date && v.time_start ? combineDateAndTime(v.date, v.time_start) : undefined
-        const endISO =
-            startISO && v.duration
-                ? dayjs(startISO).add(v.duration, 'minute').toISOString()
-                : null
+        if (isReserveAssign && editing) {
+            if (!v.time_start || !v.duration) {
+                message.warning('Укажите время начала и длительность')
+                return
+            }
+            const baseDate = dayjs(editing.start_date)
+            const startISO = combineDateAndTime(baseDate, v.time_start)
+            const endISO = dayjs(startISO).add(v.duration, 'minute').toISOString()
+            updateMut.mutate({start_date: startISO, end_date: endISO})
+            return
+        }
+
+        let startISO: string | undefined
+        let endISO: string | null = null
+        if (isReserveCreate) {
+            const reserveDate = v.date ?? day
+            if (!reserveDate) {
+                message.warning('Укажите дату для резервного приёма')
+                return
+            }
+            const reserveDateStr = reserveDate.format('YYYY-MM-DD')
+            const reserveIso = `${reserveDateStr}T00:00:00`
+            startISO = reserveIso
+            endISO = reserveIso
+        } else {
+            startISO = v.date && v.time_start ? combineDateAndTime(v.date, v.time_start) : undefined
+            endISO =
+                startISO && v.duration
+                    ? dayjs(startISO).add(v.duration, 'minute').toISOString()
+                    : null
+        }
 
         // больше не сравниваем start/end — end вычисляется из duration
 
@@ -1188,6 +1280,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                         type="primary"
                         onClick={() => {
                             setEditing(null)
+                            setIsReserveCreate(false)
+                            setIsReserveAssign(false)
                             setOpen(true)
                             form.resetFields()
                             form.setFieldsValue({
@@ -1372,6 +1466,48 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 }
             />
 
+            {isDoctorDayMode && (
+                <div style={{marginTop: 16}}>
+                    <Space align="center" style={{marginBottom: 8}}>
+                        <Typography.Title level={5} style={{marginBottom: 0}}>
+                            Резервный список
+                        </Typography.Title>
+                        <Button
+                            size="middle"
+                            type="primary"
+                            onClick={() => {
+                                if (!day || !effDoctorId) {
+                                    message.warning('Выберите врача и дату для резервного приёма')
+                                    return
+                                }
+                                setEditing(null)
+                                setIsReserveCreate(true)
+                                setIsReserveAssign(false)
+                                setOpen(true)
+                                form.resetFields()
+                                form.setFieldsValue({
+                                    client_id: context?.clientId,
+                                    doctor_id: context?.doctorId ?? effDoctorId,
+                                    date: day,
+                                })
+                            }}
+                        >
+                            Добавить в резерв
+                        </Button>
+                    </Space>
+                    <Table<VisitResponse>
+                        rowKey={(r) => r.id}
+                        loading={isReserveLoading}
+                        dataSource={reserveData?.items ?? []}
+                        columns={reserveColumns}
+                        pagination={false}
+                        locale={{
+                            emptyText: 'Резервных приёмов нет',
+                        }}
+                    />
+                </div>
+            )}
+
             <Modal
                 title={isScheduleEdit ? 'Редактировать разлиновку' : 'Разлиновка'}
                 open={scheduleModalOpen}
@@ -1436,6 +1572,8 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 onCancel={() => {
                     setOpen(false);
                     setEditing(null)
+                    setIsReserveCreate(false)
+                    setIsReserveAssign(false)
                 }}
                 onOk={onSubmit}
                 okText="Сохранить"
@@ -1443,64 +1581,76 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 confirmLoading={createMut.isPending || updateMut.isPending}
             >
                 <Form form={form} layout="vertical">
-                    {!context?.clientId && (
+                    {!isReserveAssign && !context?.clientId && (
                         <Form.Item name="client_id" label="Пациент"
                                    rules={[{required: !editing, message: 'Выберите пациента'}]}>
                             <EntitySelect entity="clients" fullWidth/>
                         </Form.Item>
                     )}
-                    {!context?.doctorId && (
+                    {!isReserveAssign && !context?.doctorId && (
                         <Form.Item name="doctor_id" label="Врач"
                                    rules={[{required: !editing, message: 'Выберите врача'}]}>
                             <EntitySelect entity="doctors" fullWidth/>
                         </Form.Item>
                     )}
 
-                    <Form.Item name="date" label="Дата" rules={[{required: !editing, message: 'Укажите дату'}]}>
-                        <DatePicker format="DD.MM.YYYY" style={{width: '100%'}}/>
-                    </Form.Item>
-
-                    <Space size="large" wrap>
-                        <Form.Item
-                            name="time_start"
-                            label="Начало"
-                            rules={[{required: !editing, message: 'Укажите время начала'}]}
-                        >
-                            <TimePicker
-                                format="HH:mm"
-                                minuteStep={5}                 // только минуты кратные 5
-                                disabledHours={disabledHoursForWorkday} // часы только 6..22
-                                hideDisabledOptions
-                                inputReadOnly
-                                needConfirm={false}
-                                showNow={false}
+                    {!isReserveAssign && (
+                        <Form.Item name="date" label="Дата" rules={[{required: !editing, message: 'Укажите дату'}]}>
+                            <DatePicker
+                                format="DD.MM.YYYY"
+                                style={{width: '100%'}}
+                                disabled={isReserveCreate}
                             />
                         </Form.Item>
+                    )}
+
+                    {!isReserveCreate && (
+                        <Space size="large" wrap>
+                            <Form.Item
+                                name="time_start"
+                                label="Начало"
+                                rules={[{required: !editing || isReserveAssign, message: 'Укажите время начала'}]}
+                            >
+                                <TimePicker
+                                    format="HH:mm"
+                                    minuteStep={5}                 // только минуты кратные 5
+                                    disabledHours={disabledHoursForWorkday} // часы только 6..22
+                                    hideDisabledOptions
+                                    inputReadOnly
+                                    needConfirm={false}
+                                    showNow={false}
+                                />
+                            </Form.Item>
 
                         <Form.Item
-                            name="duration"
-                            label="Длительность"
-                            rules={[{required: !editing, message: 'Укажите длительность'}]}
-                        >
-                            <Select
-                                placeholder="Минуты"
-                                style={{width: 140}}
-                                options={DURATIONS.map((m) => ({value: m, label: `${m} мин`}))}
-                            />
-                        </Form.Item>
-                    </Space>
+                                name="duration"
+                                label="Длительность"
+                                rules={[{required: !editing || isReserveAssign, message: 'Укажите длительность'}]}
+                            >
+                                <Select
+                                    placeholder="Минуты"
+                                    style={{width: 140}}
+                                    options={DURATIONS.map((m) => ({value: m, label: `${m} мин`}))}
+                                />
+                            </Form.Item>
+                        </Space>
+                    )}
 
-                    <Form.Item name="procedure" label="Услуга">
-                        <Input/>
-                    </Form.Item>
+                    {!isReserveAssign && (
+                        <Form.Item name="procedure" label="Услуга">
+                            <Input/>
+                        </Form.Item>
+                    )}
                     {/*<Form.Item name="cabinet" label="Кабинет">
                         <Input/>
                     </Form.Item>*/}
-                    <Form.Item name="cost" label="Стоимость">
-                        <InputNumber style={{width: '100%'}} min={0} step={50}/>
-                    </Form.Item>
+                    {!isReserveAssign && (
+                        <Form.Item name="cost" label="Стоимость">
+                            <InputNumber style={{width: '100%'}} min={0} step={50}/>
+                        </Form.Item>
+                    )}
 
-                    {editing && (
+                    {editing && !isReserveAssign && (
                         <Form.Item name="status" label="Статус">
                             <Select
                                 allowClear

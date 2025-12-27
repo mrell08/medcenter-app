@@ -46,6 +46,7 @@ class VisitSearchRequest(BaseModel):
     cabinet: str | None = None
     procedure: str | None = None
     status: VisitStatusEnum | None = None
+    reserve_list: bool = False
 
 
 class VisitUpdateRequest(BaseModel):
