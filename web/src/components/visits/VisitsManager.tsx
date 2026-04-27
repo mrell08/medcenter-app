@@ -47,7 +47,7 @@ import type {PrintColumnKey} from './printConsts'
 import {PRINT_HEADERS} from './printConsts'
 
 import {useEffect, useRef} from 'react'
-import VisitsPrintSheet from "./VisitsPrintSheet.tsx";
+import VisitsPrintSheet, { type PrintSheetRow } from "./VisitsPrintSheet.tsx";
 import { formatPhoneNumber } from '../../lib/phone'
 
 type DoctorMini = { id: string; full_name: string; speciality: string }
@@ -610,7 +610,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         if (!printOpen || !data) return
 
         const uniqueClients = Array.from(new Set(data.items.map(v => v.client_id)))
-        const uniqueDoctors = Array.from(new Set(data.items.map(v => v.doctor_id)))
+        const uniqueDoctorsSet = new Set(data.items.map(v => v.doctor_id))
+        if (effDoctorId) uniqueDoctorsSet.add(effDoctorId)
+        const uniqueDoctors = Array.from(uniqueDoctorsSet)
 
         ;(async () => {
             try {
@@ -624,7 +626,27 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 // тихо игнорируем — печать всё равно пройдёт с базовыми полями
             }
         })()
-    }, [printOpen, data])
+    }, [printOpen, data, effDoctorId])
+
+    const printData: PrintSheetRow[] = useMemo(() => {
+        const hasActiveScheduleLayout = !!scheduleTableData && !ignoreSchedule
+        if (!isDoctorDayMode || !day || !effDoctorId || !hasActiveScheduleLayout) return data?.items ?? []
+
+        const doctorName = doctorsMap[effDoctorId]?.full_name ?? 'Врач'
+        return tableData.flatMap((row): PrintSheetRow[] => {
+            if ('__gap' in row || '__slot' in row) {
+                return [{
+                    __empty: true,
+                    id: row.id,
+                    start_date: row.start_date,
+                    end_date: row.end_date,
+                    doctor_id: effDoctorId,
+                    doctor_name: doctorName,
+                }]
+            }
+            return [row]
+        })
+    }, [isDoctorDayMode, day, effDoctorId, data?.items, doctorsMap, ignoreSchedule, scheduleTableData, tableData])
 
     const printTitle =
         context?.doctorId ? (doctorsMap[context.doctorId!]?.full_name ?? 'Врач') :
@@ -659,7 +681,13 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const doPrint = useReactToPrint({
         contentRef: printRef,                               // ✅ вместо content
         documentTitle: `${printTitle} — приёмы`,
-        pageStyle: '@page { size: auto; margin: 20mm; }',
+        pageStyle: `
+            @page { size: auto; margin: 20mm; }
+            table { border-collapse: separate !important; border-spacing: 0 !important; width: 100% !important; table-layout: fixed !important; }
+            th, td { box-sizing: border-box !important; }
+            thead { display: table-header-group; }
+            tr { break-inside: avoid-page; page-break-inside: avoid; }
+        `,
         onAfterPrint: () => console.log('Печать завершена'),
         // preserveAfterPrint: false, // по умолчанию и так false
     })
@@ -1495,10 +1523,10 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             Добавить в резерв
                         </Button>
                     </Space>
-                    <Table<VisitResponse>
+                    <Table<RowData>
                         rowKey={(r) => r.id}
                         loading={isReserveLoading}
-                        dataSource={reserveData?.items ?? []}
+                        dataSource={(reserveData?.items ?? []) as RowData[]}
                         columns={reserveColumns}
                         pagination={false}
                         locale={{
@@ -1697,7 +1725,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                     subtitle={printSubtitle}
                     note={printNote}
                     columns={printCols}
-                    data={data?.items ?? []}
+                    data={printData}
                     clientsMap={clientsMap}
                     doctorsMap={doctorsMap}
                 />
