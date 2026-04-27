@@ -17,7 +17,7 @@ import {
     Typography,
     Switch
 } from 'antd'
-import type {ColumnsType} from 'antd/es/table'
+import type {ColumnsType, ColumnType} from 'antd/es/table'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import dayjs, {Dayjs} from 'dayjs'
 import {api} from '../../lib/api'
@@ -86,6 +86,20 @@ const STATUS_META: Record<VisitStatusEnum, { emoji: string; label: string }> = {
 const DURATIONS = [5, 10, 15, 20, 25, 30, 40, 60] as const
 type DurationMin = typeof DURATIONS[number]
 type PatientMode = 'existing' | 'new'
+type GapRow = {
+    __gap: true
+    id: string
+    start_date: string
+    end_date: string
+}
+type SlotRow = {
+    __slot: true
+    id: string
+    start_date: string
+    end_date: string
+    durationMinutes: number
+}
+type RowData = VisitResponse | GapRow | SlotRow
 
 type VisitFormValues = {
     // ids
@@ -135,6 +149,14 @@ type Props = {
     show?: ShowColumns
     defaultLimit?: number
     onTotalsChange?: () => void
+}
+
+function isGap(row: unknown): row is GapRow {
+    return typeof row === 'object' && row !== null && '__gap' in row && (row as GapRow).__gap
+}
+
+function isSlot(row: unknown): row is SlotRow {
+    return typeof row === 'object' && row !== null && '__slot' in row && (row as SlotRow).__slot
 }
 
 function combineDateAndTime(date: Dayjs, time: Dayjs): string {
@@ -304,31 +326,6 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         return arr
     }
 
-    // === Типы для «белых» строк ===
-    type GapRow = {
-        __gap: true
-        id: string
-        start_date: string
-        end_date: string
-    }
-    type SlotRow = {
-        __slot: true
-        id: string
-        start_date: string
-        end_date: string
-        durationMinutes: number
-    }
-    type RowData = VisitResponse | GapRow | SlotRow
-
-    function isGap(row: unknown): row is GapRow {
-        return typeof row === 'object' && row !== null && '__gap' in row && (row as GapRow).__gap
-    }
-
-    function isSlot(row: unknown): row is SlotRow {
-        return typeof row === 'object' && row !== null && '__slot' in row && (row as SlotRow).__slot
-    }
-
-
     // === Построение строк дня с «щелями» ===
     const buildDayRows = useCallback((day: Dayjs, visits: VisitResponse[], minTime: string, maxTime: string): RowData[] => {
         const {h: minH, m: minM} = parseHHMM(minTime)
@@ -449,29 +446,19 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const [editingCell, setEditingCell] = useState<{ id: string; field: EditableField } | null>(null)
     const [draftValue, setDraftValue] = useState<string | number | null>(null)
 
-    function beginEdit(v: VisitResponse, field: EditableField) {
+    const beginEdit = useCallback((v: VisitResponse, field: EditableField) => {
         setEditingCell({id: v.id, field})
         if (field === 'cost') {
             setDraftValue(typeof v.cost === 'number' ? v.cost : null)
         } else {
             setDraftValue(v.procedure ?? '')
         }
-    }
+    }, [])
 
-    function cancelEdit() {
+    const cancelEdit = useCallback(() => {
         setEditingCell(null)
         setDraftValue(null)
-    }
-
-    function saveEdit(v: VisitResponse) {
-        if (!editingCell) return
-        const body: Partial<VisitUpdateRequest> =
-            editingCell.field === 'cost'
-                ? {cost: draftValue === '' || draftValue === null ? null : Number(draftValue)}
-                : {procedure: draftValue === '' ? null : String(draftValue)}
-
-        updateInlineMutate.mutate({id: v.id, body})
-    }
+    }, [])
 
     const updateInlineMutate = useMutation({
         mutationFn: ({id, body}: { id: string; body: Partial<VisitUpdateRequest> }) =>
@@ -484,6 +471,16 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         },
         onError: (err: unknown) => message.error(getErrorMessage(err)),
     })
+
+    const saveEdit = useCallback((v: VisitResponse) => {
+        if (!editingCell) return
+        const body: Partial<VisitUpdateRequest> =
+            editingCell.field === 'cost'
+                ? {cost: draftValue === '' || draftValue === null ? null : Number(draftValue)}
+                : {procedure: draftValue === '' ? null : String(draftValue)}
+
+        updateInlineMutate.mutate({id: v.id, body})
+    }, [draftValue, editingCell, updateInlineMutate])
 
     const [printOpen, setPrintOpen] = useState(false)
     const [printCols, setPrintCols] = useState<PrintColumnKey[]>(
@@ -736,6 +733,24 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         })
     }, [context?.clientId, context?.doctorId, form])
 
+    const openSlotForm = useCallback((slot: SlotRow) => {
+        const start = dayjs(slot.start_date)
+        setEditing(null)
+        setOpen(true)
+        form.resetFields()
+        const maybeDuration = DURATIONS.includes(slot.durationMinutes as DurationMin)
+            ? (slot.durationMinutes as DurationMin)
+            : undefined
+        form.setFieldsValue({
+            patient_mode: 'existing',
+            client_id: context?.clientId,
+            doctor_id: context?.doctorId ?? effDoctorId,
+            date: start,
+            time_start: start,
+            duration: maybeDuration ?? undefined,
+        })
+    }, [context?.clientId, context?.doctorId, effDoctorId, form])
+
     const createClientMut = useMutation({
         mutationFn: (b: ClientCreateRequest) => createClient(b),
     })
@@ -790,6 +805,9 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         onError: (err: unknown) => message.error(getErrorMessage(err)),
     })
 
+    const {mutate: deleteVisitMutate, isPending: isDeletePending} = deleteMut
+    const {mutate: updateVisitStatus, isPending: isUpdateStatusPending} = updateStatusMut
+
     const createScheduleMut = useMutation({
         mutationFn: (b: ScheduleCreateRequest) => createSchedule(b),
         onSuccess: () => {
@@ -824,315 +842,353 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     })
 
     // -------- Колонки --------
-    let totalCols = 0
-    const columns: ColumnsType<RowData> = []
-    if (!isDayMode && show?.date !== false) {
-        columns.push({
-            title: 'Дата',
-            width: 110,
-            dataIndex: 'start_date',
-            render: (iso: string, row: RowData) =>
-                isGap(row) || isSlot(row)
-                    ? {children: null, props: {colSpan: 0}}
-                    : dayjs(iso).format('DD.MM.YYYY'),
-        })
-    }
-    columns.push({
-        title: 'Время',
-        key: 'time',
-        width: 140,
-        render: (row: RowData) => {
-            const start = dayjs(row.start_date).format('HH:mm')
-            const end = row.end_date ? dayjs(row.end_date).format('HH:mm') : ''
-            const label = end ? `${start}–${end}` : start
+    const columns = useMemo<ColumnsType<RowData>>(() => {
+        const next: ColumnsType<RowData> = []
+        const hiddenGapCell = {colSpan: 0}
+        const hiddenGapOrSlotCell = {colSpan: 0}
+        const gapCellStyle = {
+            color: 'black',
+            background: 'pink',
+            padding: 4,
+        }
 
-            if (isGap(row)) {
-                return {
-                    children: (
-                        <div
-                            style={{
-                                // textAlign: 'center',
-                                // color: '#8c8c8c',
-                                color: 'black',
-                                background: 'pink',
-                                // fontStyle: 'italic',
-                                padding: 4,
-                            }}
-                        >
-                            {label}
-                        </div>
-                    ),
-                    props: {colSpan: totalCols || 1},
-                }
-            }
-            return label
-        },
-    })
-    if (show?.client !== false && !context?.clientId) {
-        columns.push({
-            title: 'Пациент',
-            key: 'client',
-            render: (_: unknown, row: RowData) => {
+        if (!isDayMode && show?.date !== false) {
+            next.push({
+                title: 'Дата',
+                width: 110,
+                dataIndex: 'start_date',
+                onCell: (row) => (isGap(row) || isSlot(row) ? hiddenGapOrSlotCell : {}),
+                render: (iso: string, row: RowData) =>
+                    isGap(row) || isSlot(row) ? null : dayjs(iso).format('DD.MM.YYYY'),
+            })
+        }
+
+        next.push({
+            title: 'Время',
+            key: 'time',
+            width: 140,
+            render: (row: RowData) => {
+                const start = dayjs(row.start_date).format('HH:mm')
+                const end = row.end_date ? dayjs(row.end_date).format('HH:mm') : ''
+                const label = end ? `${start}–${end}` : start
+
                 if (isGap(row)) {
-                    return {children: null, props: {colSpan: 0}}
+                    return <div style={gapCellStyle}>{label}</div>
                 }
-                if (isSlot(row)) {
-                    return (
-                        <Button type="dashed" size="small" onClick={() => openSlotForm(row)}>
-                            Добавить
-                        </Button>
-                    )
-                }
-
-                const v = row as VisitResponse
-                return (
-                    <div style={{display: 'flex', flexDirection: 'column', lineHeight: 1.3}}>
-                        <EntityLink kind="clients" id={v.client_id} label={v.client_name}/>
-                        {v.client_phone_number && (
-                            <span style={{color: '#8c8c8c', fontSize: 12}}>
-                                {formatPhoneNumber(v.client_phone_number)}
-                            </span>
-                        )}
-                    </div>
-                )
+                return label
             },
         })
-    }
-    if (show?.doctor !== false && !context?.doctorId) {
-        columns.push({
-            title: 'Врач',
-            key: 'doctor',
-            render: (_: unknown, row: RowData) =>
-                isGap(row)
-                    ? {children: null, props: {colSpan: 0}}
-                    : isSlot(row)
-                        ? '—'
-                        : (
-                            <EntityLink
-                                kind="doctors"
-                                id={(row as VisitResponse).doctor_id}
-                                label={(row as VisitResponse).doctor_name}
-                            />
-                        ),
-        })
-    }
-    if (show?.procedure !== false) {
-        columns.push({
-            title: 'Услуга',
-            dataIndex: 'procedure',
-            ellipsis: true,
-            onCell: () => ({style: {cursor: 'text'}}),
-            render: (_: string | null | undefined, row: RowData) => {
-                if (isGap(row)) return {children: null, props: {colSpan: 0}}
-                if (isSlot(row)) return '—'
-                const v = row as VisitResponse
 
-                const isEditing = editingCell?.id === v.id && editingCell.field === 'procedure'
-                if (isEditing) {
-                    return (
-                        <Input
-                            autoFocus
-                            value={typeof draftValue === 'string' ? draftValue : ''}
-                            onChange={(e) => setDraftValue(e.target.value)}
-                            onPressEnter={() => saveEdit(v)}
-                            onBlur={() => saveEdit(v)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Escape') cancelEdit()
-                            }}
-                            disabled={updateInlineMutate.isPending}
-                            placeholder="Услуга"
-                        />
-                    )
-                }
-
-                return (
-                    <span
-                        onClick={() => beginEdit(v, 'procedure')}
-                        title="Нажмите, чтобы редактировать"
-                    >
-                        {v.procedure ?? '—'}
-                    </span>
-                )
-            },
-        })
-    }
-    if (show?.cabinet !== false) {
-        columns.push({
-            title: 'Кабинет',
-            dataIndex: 'cabinet',
-            render: (v: string | null | undefined, row: RowData) =>
-                isGap(row)
-                    ? {children: null, props: {colSpan: 0}}
-                    : isSlot(row)
-                        ? '—'
-                        : (v ?? '—'),
-        })
-    }
-    if (show?.cost !== false) {
-        columns.push({
-            title: 'Стоимость',
-            dataIndex: 'cost',
-            width: 110,
-            align: 'right',
-            onCell: () => ({style: {cursor: 'text'}}),
-            render: (_: number | null | undefined, row: RowData) => {
-                if (isGap(row)) return {children: null, props: {colSpan: 0}}
-                if (isSlot(row)) return '—'
-                const v = row as VisitResponse
-
-                const isEditing = editingCell?.id === v.id && editingCell.field === 'cost'
-                if (isEditing) {
-                    return (
-                        <InputNumber
-                            autoFocus
-                            style={{width: '100%'}}
-                            value={typeof draftValue === 'number' ? draftValue : null}
-                            onChange={(val) => setDraftValue(typeof val === 'number' ? val : null)}
-                            onPressEnter={() => saveEdit(v)}
-                            onBlur={() => saveEdit(v)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Escape') cancelEdit()
-                            }}
-                            min={0}
-                            step={50}
-                            stringMode={false}
-                            disabled={updateInlineMutate.isPending}
-                            placeholder="Стоимость"
-                        />
-                    )
-                }
-                return (
-                    <span
-                        onClick={() => beginEdit(v, 'cost')}
-                        title="Нажмите, чтобы редактировать"
-                    >
-                        {typeof v.cost === 'number' ? v.cost : '—'}
-                    </span>
-                )
-            },
-        })
-    }
-    if (show?.status !== false) {
-        columns.push({
-            title: 'Ст.',
-            dataIndex: 'status',
-            width: 56,
-            align: 'center',
-            render: (s: VisitStatusEnum, row: RowData) => {
-                if (isGap(row)) return {children: null, props: {colSpan: 0}}
-                if (isSlot(row)) return '—'
-
-                const v = row as VisitResponse
-                return (
-                    <Dropdown
-                        trigger={['click']}
-                        menu={{
-                            items: STATUS.map(st => ({
-                                key: st,
-                                label: `${STATUS_META[st].emoji} ${STATUS_META[st].label}`,
-                            })),
-                            onClick: ({key}) =>
-                                updateStatusMut.mutate({id: v.id, status: key as VisitStatusEnum}),
-                        }}
-                    >
-                        <Tooltip title={STATUS_META[s].label}>
-                            <Button
-                                type="text"
-                                loading={updateStatusMut.isPending}
-                                style={{padding: 0, lineHeight: 1}}
-                            >
-                                {STATUS_META[s].emoji}
+        if (show?.client !== false && !context?.clientId) {
+            next.push({
+                title: 'Пациент',
+                key: 'client',
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {}),
+                render: (_: unknown, row: RowData) => {
+                    if (isGap(row)) return null
+                    if (isSlot(row)) {
+                        return (
+                            <Button type="dashed" size="small" onClick={() => openSlotForm(row)}>
+                                Добавить
                             </Button>
-                        </Tooltip>
-                    </Dropdown>
-                )
-            },
-        })
-    }
-    if (show?.actions !== false) {
-        columns.push({
-            title: 'Действия',
-            width: 150,
-            render: (_: unknown, row: RowData) => {
-                if (isGap(row)) return {children: null, props: {colSpan: 0}}
-                if (isSlot(row)) return null
+                        )
+                    }
 
-                const v = row as VisitResponse
-                return (
-                    <Space>
-                        <Button
-                            size="small"
-                            className="p-1 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600"
-                            onClick={() => navigate(`/visits/${v.id}`)}
-                            title="Информация о приёме"
+                    const v = row as VisitResponse
+                    return (
+                        <div style={{display: 'flex', flexDirection: 'column', lineHeight: 1.3}}>
+                            <EntityLink kind="clients" id={v.client_id} label={v.client_name}/>
+                            {v.client_phone_number && (
+                                <span style={{color: '#8c8c8c', fontSize: 12}}>
+                                    {formatPhoneNumber(v.client_phone_number)}
+                                </span>
+                            )}
+                        </div>
+                    )
+                },
+            })
+        }
+
+        if (show?.doctor !== false && !context?.doctorId) {
+            next.push({
+                title: 'Врач',
+                key: 'doctor',
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {}),
+                render: (_: unknown, row: RowData) =>
+                    isGap(row)
+                        ? null
+                        : isSlot(row)
+                            ? '—'
+                            : (
+                                <EntityLink
+                                    kind="doctors"
+                                    id={(row as VisitResponse).doctor_id}
+                                    label={(row as VisitResponse).doctor_name}
+                                />
+                            ),
+            })
+        }
+
+        if (show?.procedure !== false) {
+            next.push({
+                title: 'Услуга',
+                dataIndex: 'procedure',
+                ellipsis: true,
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {style: {cursor: 'text'}}),
+                render: (_: string | null | undefined, row: RowData) => {
+                    if (isGap(row)) return null
+                    if (isSlot(row)) return '—'
+                    const v = row as VisitResponse
+
+                    const isEditing = editingCell?.id === v.id && editingCell.field === 'procedure'
+                    if (isEditing) {
+                        return (
+                            <Input
+                                autoFocus
+                                value={typeof draftValue === 'string' ? draftValue : ''}
+                                onChange={(e) => setDraftValue(e.target.value)}
+                                onPressEnter={() => saveEdit(v)}
+                                onBlur={() => saveEdit(v)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Escape') cancelEdit()
+                                }}
+                                disabled={updateInlineMutate.isPending}
+                                placeholder="Услуга"
+                            />
+                        )
+                    }
+
+                    return (
+                        <span
+                            onClick={() => beginEdit(v, 'procedure')}
+                            title="Нажмите, чтобы редактировать"
                         >
-                            <Info size={16} color="#2563eb"/>
-                        </Button>
+                            {v.procedure ?? '—'}
+                        </span>
+                    )
+                },
+            })
+        }
 
-                        <Button
-                            className="p-1 rounded-lg hover:bg-gray-100"
-                            size="small"
-                            title="Редактировать"
-                            onClick={() => {
-                                setEditing(v)
-                                setIsReserveCreate(false)
-                                setIsReserveAssign(false)
-                                setOpen(true)
-                                const start = dayjs(v.start_date)
-                                const end = dayjs(v.end_date)
-                                const rawDuration = v.end_date ? end.diff(start, 'minute') : undefined
-                                const duration = (rawDuration && DURATIONS.includes(rawDuration as DurationMin))
-                                    ? (rawDuration as DurationMin)
-                                    : undefined
-                                form.setFieldsValue({
-                                    patient_mode: 'existing',
-                                    client_id: context?.clientId ?? v.client_id,
-                                    doctor_id: context?.doctorId ?? v.doctor_id,
-                                    date: start,
-                                    time_start: start,
-                                    duration,                         // <--- вот это новое
-                                    procedure: v.procedure ?? undefined,
-                                    cabinet: v.cabinet ?? undefined,
-                                    cost: typeof v.cost === 'number' ? v.cost : undefined,
-                                    status: v.status,
-                                })
+        if (show?.cabinet !== false) {
+            next.push({
+                title: 'Кабинет',
+                dataIndex: 'cabinet',
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {}),
+                render: (v: string | null | undefined, row: RowData) =>
+                    isGap(row)
+                        ? null
+                        : isSlot(row)
+                            ? '—'
+                            : (v ?? '—'),
+            })
+        }
 
+        if (show?.cost !== false) {
+            next.push({
+                title: 'Стоимость',
+                dataIndex: 'cost',
+                width: 110,
+                align: 'right',
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {style: {cursor: 'text'}}),
+                render: (_: number | null | undefined, row: RowData) => {
+                    if (isGap(row)) return null
+                    if (isSlot(row)) return '—'
+                    const v = row as VisitResponse
+
+                    const isEditing = editingCell?.id === v.id && editingCell.field === 'cost'
+                    if (isEditing) {
+                        return (
+                            <InputNumber
+                                autoFocus
+                                style={{width: '100%'}}
+                                value={typeof draftValue === 'number' ? draftValue : null}
+                                onChange={(val) => setDraftValue(typeof val === 'number' ? val : null)}
+                                onPressEnter={() => saveEdit(v)}
+                                onBlur={() => saveEdit(v)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Escape') cancelEdit()
+                                }}
+                                min={0}
+                                step={50}
+                                stringMode={false}
+                                disabled={updateInlineMutate.isPending}
+                                placeholder="Стоимость"
+                            />
+                        )
+                    }
+                    return (
+                        <span
+                            onClick={() => beginEdit(v, 'cost')}
+                            title="Нажмите, чтобы редактировать"
+                        >
+                            {typeof v.cost === 'number' ? v.cost : '—'}
+                        </span>
+                    )
+                },
+            })
+        }
+
+        if (show?.status !== false) {
+            next.push({
+                title: 'Ст.',
+                dataIndex: 'status',
+                width: 56,
+                align: 'center',
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {}),
+                render: (s: VisitStatusEnum, row: RowData) => {
+                    if (isGap(row)) return null
+                    if (isSlot(row)) return '—'
+
+                    const v = row as VisitResponse
+                    return (
+                        <Dropdown
+                            trigger={['click']}
+                            menu={{
+                                items: STATUS.map(st => ({
+                                    key: st,
+                                    label: `${STATUS_META[st].emoji} ${STATUS_META[st].label}`,
+                                })),
+                                onClick: ({key}) =>
+                                    updateVisitStatus({id: v.id, status: key as VisitStatusEnum}),
                             }}
                         >
-                            <Pencil size={16} className="text-blue-600"/>
-                        </Button>
+                            <Tooltip title={STATUS_META[s].label}>
+                                <Button
+                                    type="text"
+                                    loading={isUpdateStatusPending}
+                                    style={{padding: 0, lineHeight: 1}}
+                                >
+                                    {STATUS_META[s].emoji}
+                                </Button>
+                            </Tooltip>
+                        </Dropdown>
+                    )
+                },
+            })
+        }
 
-                        <Popconfirm
-                            title="Удалить приём?"
-                            okText="Удалить"
-                            cancelText="Отмена"
-                            okButtonProps={{
-                                danger: true,
-                                loading: deleteMut.isPending,
-                            }}
-                            onConfirm={(e) => {
-                                e?.stopPropagation?.()
-                                deleteMut.mutate(v.id)
-                            }}
-                            onCancel={(e) => e?.stopPropagation?.()}
-                        >
+        if (show?.actions !== false) {
+            next.push({
+                title: 'Действия',
+                width: 150,
+                onCell: (row) => (isGap(row) ? hiddenGapCell : {}),
+                render: (_: unknown, row: RowData) => {
+                    if (isGap(row)) return null
+                    if (isSlot(row)) return null
+
+                    const v = row as VisitResponse
+                    return (
+                        <Space>
                             <Button
                                 size="small"
-                                danger
-                                loading={deleteMut.isPending}
-                                onClick={(e) => e.stopPropagation()}
-                                className="p-1 rounded-lg hover:bg-gray-100"
-                                title="Удалить"
+                                className="p-1 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600"
+                                onClick={() => navigate(`/visits/${v.id}`)}
+                                title="Информация о приёме"
                             >
-                                <Trash2 size={16} className="text-red-600"/>
+                                <Info size={16} color="#2563eb"/>
                             </Button>
-                        </Popconfirm>
-                    </Space>
-                )
-            },
-        })
-    }
-    totalCols = columns.length
+
+                            <Button
+                                className="p-1 rounded-lg hover:bg-gray-100"
+                                size="small"
+                                title="Редактировать"
+                                onClick={() => {
+                                    setEditing(v)
+                                    setIsReserveCreate(false)
+                                    setIsReserveAssign(false)
+                                    setOpen(true)
+                                    const start = dayjs(v.start_date)
+                                    const end = dayjs(v.end_date)
+                                    const rawDuration = v.end_date ? end.diff(start, 'minute') : undefined
+                                    const duration = (rawDuration && DURATIONS.includes(rawDuration as DurationMin))
+                                        ? (rawDuration as DurationMin)
+                                        : undefined
+                                    form.setFieldsValue({
+                                        patient_mode: 'existing',
+                                        client_id: context?.clientId ?? v.client_id,
+                                        doctor_id: context?.doctorId ?? v.doctor_id,
+                                        date: start,
+                                        time_start: start,
+                                        duration,
+                                        procedure: v.procedure ?? undefined,
+                                        cabinet: v.cabinet ?? undefined,
+                                        cost: typeof v.cost === 'number' ? v.cost : undefined,
+                                        status: v.status,
+                                    })
+                                }}
+                            >
+                                <Pencil size={16} className="text-blue-600"/>
+                            </Button>
+
+                            <Popconfirm
+                                title="Удалить приём?"
+                                okText="Удалить"
+                                cancelText="Отмена"
+                                okButtonProps={{
+                                    danger: true,
+                                    loading: isDeletePending,
+                                }}
+                                onConfirm={(e) => {
+                                    e?.stopPropagation?.()
+                                    deleteVisitMutate(v.id)
+                                }}
+                                onCancel={(e) => e?.stopPropagation?.()}
+                            >
+                                <Button
+                                    size="small"
+                                    danger
+                                    loading={isDeletePending}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="p-1 rounded-lg hover:bg-gray-100"
+                                    title="Удалить"
+                                >
+                                    <Trash2 size={16} className="text-red-600"/>
+                                </Button>
+                            </Popconfirm>
+                        </Space>
+                    )
+                },
+            })
+        }
+
+        const totalCols = next.length
+        const timeColumn = next.find((col) => col.key === 'time') as ColumnType<RowData> | undefined
+        if (timeColumn) {
+            const prevOnCell = timeColumn.onCell
+            timeColumn.onCell = (row, rowIndex) => {
+                const base = typeof prevOnCell === 'function' ? (prevOnCell(row, rowIndex) ?? {}) : {}
+                return isGap(row) ? {...base, colSpan: totalCols || 1} : base
+            }
+        }
+
+        return next
+    }, [
+        beginEdit,
+        cancelEdit,
+        context?.clientId,
+        context?.doctorId,
+        draftValue,
+        editingCell,
+        form,
+        isDeletePending,
+        navigate,
+        openSlotForm,
+        saveEdit,
+        show?.actions,
+        show?.cabinet,
+        show?.client,
+        show?.cost,
+        show?.date,
+        show?.doctor,
+        show?.procedure,
+        show?.status,
+        updateInlineMutate.isPending,
+        isUpdateStatusPending,
+        updateVisitStatus,
+        deleteVisitMutate,
+        isDayMode,
+    ])
 
     const reserveAssignColumn = useMemo(() => ({
         title: '',
@@ -1243,24 +1299,6 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             createMut.mutate(body)
         }
     }
-
-    const openSlotForm = useCallback((slot: SlotRow) => {
-        const start = dayjs(slot.start_date)
-        setEditing(null)
-        setOpen(true)
-        form.resetFields()
-        const maybeDuration = DURATIONS.includes(slot.durationMinutes as DurationMin)
-            ? (slot.durationMinutes as DurationMin)
-            : undefined
-        form.setFieldsValue({
-            patient_mode: 'existing',
-            client_id: context?.clientId,
-            doctor_id: context?.doctorId ?? effDoctorId,
-            date: start,
-            time_start: start,
-            duration: maybeDuration ?? undefined,
-        })
-    }, [context?.clientId, context?.doctorId, effDoctorId, form])
 
     const openScheduleModal = useCallback(() => {
         const {h: minH, m: minM} = parseHHMM(MIN_TIME)
