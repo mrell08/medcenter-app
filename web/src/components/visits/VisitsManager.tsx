@@ -6,6 +6,7 @@ import {
     Input,
     InputNumber,
     Modal,
+    Radio,
     Select,
     Space,
     Table,
@@ -20,7 +21,14 @@ import type {ColumnsType} from 'antd/es/table'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import dayjs, {Dayjs} from 'dayjs'
 import {api} from '../../lib/api'
-import type {VisitCreateRequest, VisitResponse, VisitStatusEnum, VisitUpdateRequest} from '../../api'
+import type {
+    ClientCreateRequest,
+    ClientResponse,
+    VisitCreateRequest,
+    VisitResponse,
+    VisitStatusEnum,
+    VisitUpdateRequest,
+} from '../../api'
 import {
     createSchedule,
     deleteSchedule,
@@ -48,7 +56,7 @@ import {PRINT_HEADERS} from './printConsts'
 
 import {useEffect, useRef} from 'react'
 import VisitsPrintSheet, { type PrintSheetRow } from "./VisitsPrintSheet.tsx";
-import { formatPhoneNumber } from '../../lib/phone'
+import { formatPhoneInput, formatPhoneNumber, normalizePhoneNumber } from '../../lib/phone'
 
 type DoctorMini = { id: string; full_name: string; speciality: string }
 type ClientMini = { id: string; full_name: string; phone_number?: string | null; date_of_birth?: string | null }
@@ -63,6 +71,11 @@ async function fetchClientMini(id: string): Promise<ClientMini> {
     return r.data
 }
 
+async function createClient(body: ClientCreateRequest): Promise<ClientResponse> {
+    const r = await api.post<ClientResponse>('/clients/', body)
+    return r.data
+}
+
 const {RangePicker} = DatePicker
 const STATUS: VisitStatusEnum[] = ['UNCONFIRMED', 'CONFIRMED', 'PAID']
 const STATUS_META: Record<VisitStatusEnum, { emoji: string; label: string }> = {
@@ -72,11 +85,16 @@ const STATUS_META: Record<VisitStatusEnum, { emoji: string; label: string }> = {
 }
 const DURATIONS = [5, 10, 15, 20, 25, 30, 40, 60] as const
 type DurationMin = typeof DURATIONS[number]
+type PatientMode = 'existing' | 'new'
 
 type VisitFormValues = {
     // ids
     client_id?: string
     doctor_id?: string
+    patient_mode?: PatientMode
+    client_full_name?: string
+    client_phone_number?: string
+    client_date_of_birth?: Dayjs | null
     // дата/время для UI
     date?: Dayjs | null
     time_start?: Dayjs | null
@@ -701,6 +719,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const [scheduleForm] = Form.useForm<ScheduleFormValues>()
     const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
     const [isScheduleEdit, setIsScheduleEdit] = useState(false)
+    const patientMode = Form.useWatch('patient_mode', form) ?? 'existing'
 
     const openReserveAssign = useCallback((v: VisitResponse) => {
         setEditing(v)
@@ -709,12 +728,17 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
         setOpen(true)
         form.resetFields()
         form.setFieldsValue({
+            patient_mode: 'existing',
             client_id: context?.clientId ?? v.client_id,
             doctor_id: context?.doctorId ?? v.doctor_id,
             date: dayjs(v.start_date),
             duration: 10,
         })
     }, [context?.clientId, context?.doctorId, form])
+
+    const createClientMut = useMutation({
+        mutationFn: (b: ClientCreateRequest) => createClient(b),
+    })
 
     const createMut = useMutation({
         mutationFn: (b: VisitCreateRequest) => createVisit(b),
@@ -1061,6 +1085,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                                     ? (rawDuration as DurationMin)
                                     : undefined
                                 form.setFieldsValue({
+                                    patient_mode: 'existing',
                                     client_id: context?.clientId ?? v.client_id,
                                     doctor_id: context?.doctorId ?? v.doctor_id,
                                     date: start,
@@ -1171,9 +1196,31 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
 
         // больше не сравниваем start/end — end вычисляется из duration
 
+        let selectedClientId = context?.clientId ?? v.client_id
+        if (!editing && !isReserveAssign && !context?.clientId && v.patient_mode === 'new') {
+            try {
+                const createdClient = await createClientMut.mutateAsync({
+                    full_name: v.client_full_name!,
+                    phone_number: normalizePhoneNumber(v.client_phone_number)!,
+                    date_of_birth: v.client_date_of_birth ? v.client_date_of_birth.format('YYYY-MM-DD') : undefined,
+                })
+                selectedClientId = createdClient.id
+                setClientId(createdClient.id)
+                form.setFieldsValue({
+                    patient_mode: 'existing',
+                    client_id: createdClient.id,
+                })
+                qc.invalidateQueries({queryKey: ['clients']})
+                qc.invalidateQueries({queryKey: ['clients', 'options']})
+            } catch (err: unknown) {
+                message.error(getErrorMessage(err))
+                return
+            }
+        }
+
         if (editing) {
             const body: VisitUpdateRequest = {
-                client_id: context?.clientId ?? v.client_id,
+                client_id: selectedClientId,
                 doctor_id: context?.doctorId ?? v.doctor_id,
                 start_date: startISO,
                 end_date: endISO ?? undefined,
@@ -1185,7 +1232,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             updateMut.mutate(body)
         } else {
             const body: VisitCreateRequest = {
-                client_id: (context?.clientId ?? v.client_id)!,
+                client_id: selectedClientId!,
                 doctor_id: (context?.doctorId ?? v.doctor_id)!,
                 start_date: startISO!,            // required
                 end_date: endISO,                 // string | null
@@ -1206,6 +1253,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
             ? (slot.durationMinutes as DurationMin)
             : undefined
         form.setFieldsValue({
+            patient_mode: 'existing',
             client_id: context?.clientId,
             doctor_id: context?.doctorId ?? effDoctorId,
             date: start,
@@ -1313,6 +1361,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                             setOpen(true)
                             form.resetFields()
                             form.setFieldsValue({
+                                patient_mode: 'existing',
                                 client_id: context?.clientId,
                                 doctor_id: context?.doctorId,
                                 date: day ?? undefined,
@@ -1514,6 +1563,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                                 setOpen(true)
                                 form.resetFields()
                                 form.setFieldsValue({
+                                    patient_mode: 'existing',
                                     client_id: context?.clientId,
                                     doctor_id: context?.doctorId ?? effDoctorId,
                                     date: day,
@@ -1606,14 +1656,63 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                 onOk={onSubmit}
                 okText="Сохранить"
                 cancelText="Отмена"
-                confirmLoading={createMut.isPending || updateMut.isPending}
+                confirmLoading={createClientMut.isPending || createMut.isPending || updateMut.isPending}
             >
                 <Form form={form} layout="vertical">
-                    {!isReserveAssign && !context?.clientId && (
+                    {!editing && !isReserveAssign && !context?.clientId && (
+                        <Form.Item name="patient_mode">
+                            <Radio.Group
+                                optionType="button"
+                                buttonStyle="solid"
+                                onChange={(e) => {
+                                    const nextMode = e.target.value as PatientMode
+                                    if (nextMode === 'new') {
+                                        form.setFieldsValue({
+                                            patient_mode: 'new',
+                                            client_id: undefined,
+                                        })
+                                        return
+                                    }
+                                    form.setFieldsValue({
+                                        patient_mode: 'existing',
+                                        client_full_name: undefined,
+                                        client_phone_number: undefined,
+                                        client_date_of_birth: null,
+                                    })
+                                }}
+                            >
+                                <Radio.Button value="existing">Существующий пациент</Radio.Button>
+                                <Radio.Button value="new">Новый пациент</Radio.Button>
+                            </Radio.Group>
+                        </Form.Item>
+                    )}
+                    {!isReserveAssign && !context?.clientId && (editing || patientMode === 'existing') && (
                         <Form.Item name="client_id" label="Пациент"
                                    rules={[{required: !editing, message: 'Выберите пациента'}]}>
                             <EntitySelect entity="clients" fullWidth/>
                         </Form.Item>
+                    )}
+                    {!editing && !isReserveAssign && !context?.clientId && patientMode === 'new' && (
+                        <>
+                            <Form.Item
+                                name="client_full_name"
+                                label="ФИО нового пациента"
+                                rules={[{required: true, message: 'Укажите ФИО пациента'}]}
+                            >
+                                <Input/>
+                            </Form.Item>
+                            <Form.Item
+                                name="client_phone_number"
+                                label="Телефон"
+                                rules={[{required: true, message: 'Укажите телефон пациента'}]}
+                                getValueFromEvent={(e) => formatPhoneInput(e.target.value)}
+                            >
+                                <Input inputMode="tel" placeholder="+7 (___) ___-__-__"/>
+                            </Form.Item>
+                            <Form.Item name="client_date_of_birth" label="Дата рождения">
+                                <DatePicker style={{width: '100%'}} format="DD.MM.YYYY"/>
+                            </Form.Item>
+                        </>
                     )}
                     {!isReserveAssign && !context?.doctorId && (
                         <Form.Item name="doctor_id" label="Врач"
