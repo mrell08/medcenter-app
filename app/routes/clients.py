@@ -13,7 +13,13 @@ from app.schemas import (
     VisitResponse,
     VisitSearchRequest,
 )
-from app.utils.client import create_new_client, find_client_by_substr, get_client_by_id, update_client
+from app.utils.client import (
+    create_new_client,
+    delete_client_by_id,
+    find_client_by_substr,
+    get_client_by_id,
+    update_client,
+)
 from app.utils.visit import svc_get_visits_by_filter
 
 router = APIRouter(prefix="/clients", tags=["client"])
@@ -95,6 +101,23 @@ async def patch_client(
     if client is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return client
+
+
+@router.delete(
+    "/{client_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "Client not found"},
+    }
+)
+async def delete_client(
+        _: Request,
+        client_id: uuid.UUID,
+        session: AsyncSession = Depends(get_session),
+):
+    is_deleted = await delete_client_by_id(session, client_id)
+    if not is_deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
 @router.get(

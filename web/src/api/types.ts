@@ -33,7 +33,8 @@ export interface paths {
         get: operations["get_client_api_v1_clients__client_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Client */
+        delete: operations["delete_client_api_v1_clients__client_id__delete"];
         options?: never;
         head?: never;
         /** Patch Client */
@@ -544,6 +545,42 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ClientResponse"];
                 };
+            };
+            /** @description Client not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_client_api_v1_clients__client_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                client_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Client not found */
             404: {

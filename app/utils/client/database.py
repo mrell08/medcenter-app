@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Sequence, exc, func, or_, select, update
+from sqlalchemy import Sequence, delete, exc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Client
@@ -51,6 +51,19 @@ async def update_client(
     return client
 
 
+async def delete_client_by_id(
+        session: AsyncSession,
+        client_id: uuid.UUID,
+) -> bool:
+    deleted_client_id = await session.scalar(
+        delete(Client)
+        .where(Client.id == client_id)
+        .returning(Client.id)
+    )
+    await session.commit()
+    return deleted_client_id is not None
+
+
 async def find_client_by_substr(
         session: AsyncSession,
         client_substr: str
@@ -67,4 +80,3 @@ async def find_client_by_substr(
         .limit(20)
     )
     return clients.all()
-

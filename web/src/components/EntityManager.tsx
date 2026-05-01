@@ -1,7 +1,7 @@
 // src/components/EntityManager.tsx
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Form, Input, Modal, Space, Table, message } from 'antd'
+import { Button, Form, Input, Modal, Popconfirm, Space, Table, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { FormInstance } from 'antd'
@@ -12,6 +12,7 @@ export type RecursivePartial<T> = {
 }
 import { getErrorMessage } from '../lib/errors'
 import {Pencil} from "lucide-react";
+import {Trash2} from 'lucide-react'
 
 type WithId = { id: string }
 
@@ -26,11 +27,16 @@ type EntityManagerProps<
     fetchList: (search: string) => Promise<TItem[]>
     createItem: (body: TCreate) => Promise<TItem>
     updateItem: (id: string, body: TUpdate) => Promise<TItem>
+    deleteItem?: (id: string) => Promise<void>
     columns: ColumnsType<TItem>
     renderForm: (form: FormInstance<TFormValues>, editing: TItem | null) => ReactNode
     toForm: (item: TItem) => RecursivePartial<TFormValues>
     toCreate: (v: TFormValues) => TCreate
     toUpdate: (v: TFormValues) => TUpdate
+    getDeleteTitle?: (item: TItem) => ReactNode
+    getDeleteDescription?: (item: TItem) => ReactNode
+    deleteSuccessMessage?: string
+    invalidateOnDelete?: readonly (readonly unknown[])[]
     searchPlaceholder?: string
     createButtonText?: string
     initialValues?: RecursivePartial<TFormValues>
@@ -44,7 +50,8 @@ export default function EntityManager<
 >(props: EntityManagerProps<TItem, TCreate, TUpdate, TFormValues>) {
     const {
         title, queryKey, fetchList, createItem, updateItem,
-        columns, renderForm, toForm, toCreate, toUpdate, initialValues,
+        deleteItem, columns, renderForm, toForm, toCreate, toUpdate, initialValues,
+        getDeleteTitle, getDeleteDescription, deleteSuccessMessage = 'Удалено', invalidateOnDelete = [],
         searchPlaceholder = 'Поиск…', createButtonText = 'Создать',
     } = props
 
@@ -85,23 +92,69 @@ export default function EntityManager<
         onError: (err: unknown) => message.error(getErrorMessage(err)),
     })
 
+    const deleteMut = useMutation({
+        mutationFn: async (id: string) => {
+            if (!deleteItem) throw new Error('Delete action is not configured')
+            await deleteItem(id)
+        },
+        onSuccess: (_, deletedId) => {
+            message.success(deleteSuccessMessage)
+            qc.invalidateQueries({ queryKey })
+            invalidateOnDelete.forEach((key) => qc.invalidateQueries({ queryKey: [...key] }))
+            if (editing?.id === deletedId) {
+                setOpen(false)
+                setEditing(null)
+                form.resetFields()
+            }
+        },
+        onError: (err: unknown) => message.error(getErrorMessage(err)),
+    })
+    const { mutate: deleteEntity, isPending: isDeletePending } = deleteMut
+
     const tableColumns: ColumnsType<TItem> = useMemo(() => ([
         ...columns,
         {
             title: 'Действия',
             key: 'actions',
-            width: 140,
+            width: deleteItem ? 180 : 120,
             render: (_: unknown, row: TItem) => (
-                <Button onClick={() => {
-                    setEditing(row); setOpen(true)
-                    // setFieldsValue ожидает RecursivePartial<TFormValues>
-                    form.setFieldsValue(toForm(row) as Parameters<typeof form.setFieldsValue>[0])
-                }}>
-                    <Pencil size={16} className="text-blue-600" />
-                </Button>
+                <Space>
+                    <Button onClick={() => {
+                        setEditing(row); setOpen(true)
+                        // setFieldsValue ожидает RecursivePartial<TFormValues>
+                        form.setFieldsValue(toForm(row) as Parameters<typeof form.setFieldsValue>[0])
+                    }}>
+                        <Pencil size={16} className="text-blue-600" />
+                    </Button>
+                    {deleteItem && (
+                        <Popconfirm
+                            title={getDeleteTitle?.(row) ?? `Удалить ${title}?`}
+                            description={getDeleteDescription?.(row)}
+                            okText="Удалить"
+                            cancelText="Отмена"
+                            okButtonProps={{
+                                danger: true,
+                                loading: isDeletePending,
+                            }}
+                            onConfirm={(e) => {
+                                e?.stopPropagation?.()
+                                deleteEntity(row.id)
+                            }}
+                            onCancel={(e) => e?.stopPropagation?.()}
+                        >
+                            <Button
+                                danger
+                                onClick={(e) => e.stopPropagation()}
+                                loading={isDeletePending}
+                            >
+                                <Trash2 size={16} className="text-red-600" />
+                            </Button>
+                        </Popconfirm>
+                    )}
+                </Space>
             ),
         },
-    ]), [columns, form, toForm])
+    ]), [columns, deleteEntity, deleteItem, form, getDeleteDescription, getDeleteTitle, isDeletePending, title, toForm])
 
     const onSubmit = async () => {
         const v = await form.validateFields() as TFormValues

@@ -26,6 +26,9 @@ async function updateClient(id: string, body: ClientUpdateRequest): Promise<Clie
     const res = await api.patch<ClientResponse>(`/clients/${id}`, body)
     return res.data
 }
+async function deleteClient(id: string): Promise<void> {
+    await api.delete(`/clients/${id}`)
+}
 
 const columns: ColumnsType<ClientResponse> = [
     {
@@ -59,7 +62,20 @@ export default function ClientsPage() {
                 fetchList={fetchClients}
                 createItem={createClient}
                 updateItem={updateClient}
+                deleteItem={deleteClient}
                 columns={columns}
+                deleteSuccessMessage="Пациент удалён"
+                invalidateOnDelete={[['clients', 'options'], ['visits']]}
+                getDeleteTitle={(item) => `Удалить пациента «${item.full_name}»?`}
+                getDeleteDescription={(item) => (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span>Телефон: {formatPhoneNumber(item.phone_number) || '—'}</span>
+                        <span>
+                            Дата рождения: {item.date_of_birth ? dayjs(item.date_of_birth).format('DD.MM.YYYY') : '—'}
+                        </span>
+                        <span>Все приёмы этого пациента тоже будут удалены.</span>
+                    </div>
+                )}
                 searchPlaceholder="Поиск по ФИО/телефону"
                 createButtonText="Новый пациент"
                 initialValues={{ phone_number: formatPhoneInput('') }}
