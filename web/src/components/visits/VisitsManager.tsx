@@ -1255,7 +1255,6 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
                     date_of_birth: v.client_date_of_birth ? v.client_date_of_birth.format('YYYY-MM-DD') : undefined,
                 })
                 selectedClientId = createdClient.id
-                setClientId(createdClient.id)
                 form.setFieldsValue({
                     patient_mode: 'existing',
                     client_id: createdClient.id,
