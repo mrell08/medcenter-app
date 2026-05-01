@@ -696,13 +696,7 @@ export default function VisitsManager({context, show, defaultLimit = 30, onTotal
     const doPrint = useReactToPrint({
         contentRef: printRef,                               // ✅ вместо content
         documentTitle: `${printTitle} — приёмы`,
-        pageStyle: `
-            @page { size: auto; margin: 20mm; }
-            table { border-collapse: separate !important; border-spacing: 0 !important; width: 100% !important; table-layout: fixed !important; }
-            th, td { box-sizing: border-box !important; }
-            thead { display: table-header-group; }
-            tr { break-inside: avoid-page; page-break-inside: avoid; }
-        `,
+        pageStyle: '@page { size: auto; margin: 20mm; }',
         onAfterPrint: () => console.log('Печать завершена'),
         // preserveAfterPrint: false, // по умолчанию и так false
     })

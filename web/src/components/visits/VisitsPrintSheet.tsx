@@ -1,5 +1,4 @@
 import { forwardRef } from 'react'
-import type { CSSProperties } from 'react'
 import dayjs from 'dayjs'
 import type { VisitResponse } from '../../api'
 import type { PrintColumnKey } from './printConsts'
@@ -97,35 +96,15 @@ function cell(
     }
 }
 
-const tableStyle: CSSProperties = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, tableLayout: 'fixed', fontSize: 12 }
-const cellBaseStyle: CSSProperties = { padding: '6px 8px', textAlign: 'left', boxSizing: 'border-box', verticalAlign: 'top' }
-const titleStyle: CSSProperties = { fontSize: 18, fontWeight: 700, margin: 0 }
-const subtitleStyle: CSSProperties = { fontSize: 14, margin: '2px 0 8px 0' }
-const noteStyle: CSSProperties = { fontSize: 12, color: '#555', margin: '0 0 12px 0' }
-
-function gridCellStyle(rowIndex: number, colIndex: number, rowCount: number, colCount: number): CSSProperties {
-    return {
-        ...cellBaseStyle,
-        borderTop: '1px solid #777',
-        borderLeft: '1px solid #777',
-        ...(colIndex === colCount - 1 ? { borderRight: '1px solid #777' } : {}),
-        ...(rowIndex === rowCount - 1 ? { borderBottom: '1px solid #777' } : {}),
-    }
-}
-
-function headerCellStyle(colIndex: number, colCount: number): CSSProperties {
-    return {
-        ...cellBaseStyle,
-        borderTop: '1px solid #777',
-        borderLeft: '1px solid #777',
-        borderBottom: '1px solid #777',
-        ...(colIndex === colCount - 1 ? { borderRight: '1px solid #777' } : {}),
-    }
-}
+const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 12 }
+const thtd: React.CSSProperties = { border: '1px solid #ccc', padding: '6px 8px', textAlign: 'left' }
+const titleStyle: React.CSSProperties = { fontSize: 18, fontWeight: 700, margin: 0 }
+const subtitleStyle: React.CSSProperties = { fontSize: 14, margin: '2px 0 8px 0' }
+const noteStyle: React.CSSProperties = { fontSize: 12, color: '#555', margin: '0 0 12px 0' }
 
 const VisitsPrintSheet = forwardRef<HTMLDivElement, Props>(({ title, subtitle, note, columns, data, clientsMap, doctorsMap }, ref) => {
     return (
-        <div ref={ref} style={{ padding: 16, color: '#000', fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}>
+        <div ref={ref} style={{ padding: 16, color: '#000', fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif' }}>
             {title && <h1 style={titleStyle}>{title}</h1>}
             {subtitle && <p style={subtitleStyle}>{subtitle}</p>}
             {note && <p style={noteStyle}>{note}</p>}
@@ -133,16 +112,14 @@ const VisitsPrintSheet = forwardRef<HTMLDivElement, Props>(({ title, subtitle, n
             <table style={tableStyle}>
                 <thead>
                 <tr>
-                    {columns.map((c, colIndex) => (
-                        <th key={c} style={headerCellStyle(colIndex, columns.length)}>{PRINT_HEADERS[c]}</th>
-                    ))}
+                    {columns.map(c => <th key={c} style={thtd}>{PRINT_HEADERS[c]}</th>)}
                 </tr>
                 </thead>
                 <tbody>
-                {data.map((row, rowIndex) => (
+                {data.map(row => (
                     <tr key={row.id}>
-                        {columns.map((c, colIndex) => (
-                            <td key={c} style={gridCellStyle(rowIndex, colIndex, data.length, columns.length)}>
+                        {columns.map(c => (
+                            <td key={c} style={thtd}>
                                 {cell(c, row, clientsMap, doctorsMap)}
                             </td>
                         ))}
